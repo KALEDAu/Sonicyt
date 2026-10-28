@@ -13,32 +13,36 @@ const INVIDIOUS_INSTANCES = [
   'https://invidious.f5.si'
 ];
 
-// Proxy CORS gratuito para evitar bloqueos de origen desde github.io
+// Proxy CORS gratuito para evitar bloqueos desde github.io
 const CORS_PROXY = 'https://api.allorigins.win/raw?url=';
 
 let INVIDIOUS = INVIDIOUS_INSTANCES[0];
 let INVIDIOUS_INDEX = 0;
 
 // ---------- Elementos DOM ----------
-const searchInput = document.getElementById('searchInput');
-const searchBtn = document.getElementById('searchBtn');
-const resultsEl = document.getElementById('results');
-const emptyEl = document.getElementById('emptyState');
+let searchInput, searchBtn, resultsEl, emptyEl;
+let audio, playerBar, playerThumb, playerTitle, playerArtist, btnPlayPause, progressBar, timeCurrent, timeDuration;
 
-const audio = new Audio();
-audio.preload = 'none';
+function obtenerElementos() {
+  searchInput = document.getElementById('searchInput');
+  searchBtn = document.getElementById('searchBtn');
+  resultsEl = document.getElementById('results');
+  emptyEl = document.getElementById('emptyState');
+
+  audio = new Audio();
+  audio.preload = 'none';
+
+  playerBar = document.getElementById('playerBar');
+  playerThumb = document.getElementById('playerThumb');
+  playerTitle = document.getElementById('playerTitle');
+  playerArtist = document.getElementById('playerArtist');
+  btnPlayPause = document.getElementById('btnPlayPause');
+  progressBar = document.getElementById('progressBar');
+  timeCurrent = document.getElementById('timeCurrent');
+  timeDuration = document.getElementById('timeDuration');
+}
 
 let currentSong = null;
-
-// Barra de reproductor
-const playerBar = document.getElementById('playerBar');
-const playerThumb = document.getElementById('playerThumb');
-const playerTitle = document.getElementById('playerTitle');
-const playerArtist = document.getElementById('playerArtist');
-const btnPlayPause = document.getElementById('btnPlayPause');
-const progressBar = document.getElementById('progressBar');
-const timeCurrent = document.getElementById('timeCurrent');
-const timeDuration = document.getElementById('timeDuration');
 
 function fmtTime(seconds) {
   if (!seconds || isNaN(seconds)) return '0:00';
@@ -56,18 +60,17 @@ function escapeHtml(text) {
 
 // ---------- Mensaje de estado visual ----------
 function setEstado(mensaje, esError = false) {
+  if (!resultsEl || !emptyEl) return;
   resultsEl.innerHTML = '';
-  emptyEl.textContent = mensaje;
-  emptyEl.style.color = esError ? '#ff6b6b' : '#a3a3a3';
+  emptyEl.innerHTML = '';
+  const p = document.createElement('p');
+  p.style.textAlign = 'center';
+  p.style.marginTop = '60px';
+  p.style.fontSize = '16px';
+  p.style.color = esError ? '#ff6b6b' : '#1DB954';
+  p.textContent = mensaje;
+  emptyEl.appendChild(p);
   emptyEl.style.display = 'block';
-}
-
-// ---------- Probar siguiente instancia de Invidious ----------
-function siguienteInstancia() {
-  INVIDIOUS_INDEX = (INVIDIOUS_INDEX + 1) % INVIDIOUS_INSTANCES.length;
-  INVIDIOUS = INVIDIOUS_INSTANCES[INVIDIOUS_INDEX];
-  console.log('Cambiando a instancia:', INVIDIOUS);
-  return INVIDIOUS;
 }
 
 // ---------- Construir URL con proxy CORS ----------
@@ -77,46 +80,51 @@ function urlConProxy(urlDestino) {
 
 // ---------- Búsqueda en Invidious con fallback y proxy CORS ----------
 async function buscar(q) {
-  try {
-    setEstado('Buscando…', false);
-    resultsEl.innerHTML = '';
+  // PRIMERA ACCIÓN: mostrar mensaje de conexión al instante
+  setEstado('Conectando con el servidor…', false);
 
-    let ultimoError = null;
+  let ultimoError = null;
 
-    for (let i = 0; i < INVIDIOUS_INSTANCES.length; i++) {
-      try {
-        const instancia = INVIDIOUS_INSTANCES[i];
-        const urlInvidious = instancia + '/api/v1/search?q=' + encodeURIComponent(q) + '&type=video';
-        const urlProxy = urlConProxy(urlInvidious);
+  for (let i = 0; i < INVIDIOUS_INSTANCES.length; i++) {
+    try {
+      const instancia = INVIDIOUS_INSTANCES[i];
+      const urlInvidious = instancia + '/api/v1/search?q=' + encodeURIComponent(q) + '&type=video';
+      const urlProxy = urlConProxy(urlInvidious);
 
-        const res = await fetch(urlProxy, { signal: AbortSignal.timeout(15000) });
-        if (!res.ok) throw new Error('HTTP ' + res.status + ' desde ' + instancia);
+      console.log('Probando instancia:', instancia);
 
-        const data = await res.json();
-
-        // Éxito: guardar instancia activa
-        INVIDIOUS = instancia;
-        INVIDIOUS_INDEX = i;
-
-        renderizar(data || []);
-        return;
-      } catch (err) {
-        ultimoError = err;
-        console.warn('Instancia falló:', INVIDIOUS_INSTANCES[i], err.message);
+      const res = await fetch(urlProxy);
+      if (!res.ok) {
+        throw new Error('HTTP ' + res.status + ' desde ' + instancia);
       }
+
+      const texto = await res.text();
+      let data;
+      try {
+        data = JSON.parse(texto);
+      } catch (e) {
+        throw new Error('Respuesta no es JSON válido desde ' + instancia);
+      }
+
+      // Éxito: guardar instancia activa
+      INVIDIOUS = instancia;
+      INVIDIOUS_INDEX = i;
+
+      renderizar(data || []);
+      return;
+    } catch (err) {
+      ultimoError = err;
+      console.warn('Instancia falló:', INVIDIOUS_INSTANCES[i], err.message);
     }
-
-    // Todas fallaron
-    throw ultimoError || new Error('Todas las instancias de Invidious fallaron');
-
-  } catch (err) {
-    console.error(err);
-    const detalle = err.message ? err.message : String(err);
-    setEstado('Error: ' + detalle, true);
   }
+
+  // Todas fallaron: mostrar error exacto en pantalla
+  const detalle = (ultimoError && ultimoError.message) ? ultimoError.message : 'Error desconocido';
+  setEstado('Error: ' + detalle, true);
 }
 
 function renderizar(items) {
+  if (!resultsEl) return;
   resultsEl.innerHTML = '';
   if (!items || items.length === 0) {
     setEstado('No se encontraron resultados', false);
@@ -148,141 +156,171 @@ function renderizar(items) {
 
 // ---------- Cargar canción y extraer audio directo ----------
 async function cargarCancion(item) {
-  try {
-    setEstado('Cargando canción…', false);
+  if (!emptyEl) return;
+  emptyEl.innerHTML = '';
+  const p = document.createElement('p');
+  p.style.textAlign = 'center';
+  p.style.marginTop = '60px';
+  p.style.fontSize = '16px';
+  p.style.color = '#1DB954';
+  p.textContent = 'Cargando canción…';
+  emptyEl.appendChild(p);
+  emptyEl.style.display = 'block';
 
-    let ultimoError = null;
+  let ultimoError = null;
 
-    for (let i = 0; i < INVIDIOUS_INSTANCES.length; i++) {
-      try {
-        const instancia = INVIDIOUS_INSTANCES[i];
-        const urlInvidious = instancia + '/api/v1/videos/' + item.videoId;
-        const urlProxy = urlConProxy(urlInvidious);
+  for (let i = 0; i < INVIDIOUS_INSTANCES.length; i++) {
+    try {
+      const instancia = INVIDIOUS_INSTANCES[i];
+      const urlInvidious = instancia + '/api/v1/videos/' + item.videoId;
+      const urlProxy = urlConProxy(urlInvidious);
 
-        const res = await fetch(urlProxy, { signal: AbortSignal.timeout(15000) });
-        if (!res.ok) throw new Error('HTTP ' + res.status + ' desde ' + instancia);
-        const vid = await res.json();
-
-        let audioUrl = null;
-        const formats = vid.adaptiveFormats || [];
-
-        const f = formats.find(function (x) {
-          return x.itag === 140 || (x.contentType && x.contentType.startsWith('audio/'));
-        });
-
-        if (f && f.url) {
-          audioUrl = f.url;
-        } else {
-          const fs = vid.formatStreams || [];
-          const f2 = fs.find(function (x) {
-            return x.itag === 140 || (x.type && x.type.includes('audio'));
-          });
-          if (f2 && f2.url) audioUrl = f2.url;
-        }
-
-        if (!audioUrl) throw new Error('No se encontró stream de audio directo (itag=140)');
-
-        // Éxito
-        INVIDIOUS = instancia;
-        INVIDIOUS_INDEX = i;
-
-        currentSong = {
-          id: vid.videoId || item.videoId,
-          title: vid.title || item.title,
-          artist: vid.author || item.author,
-          thumb: (vid.thumbnails && vid.thumbnails[0] && vid.thumbnails[0].url)
-            ? vid.thumbnails[0].url
-            : (item.thumbnails && item.thumbnails[0] ? item.thumbnails[0].url : ''),
-          url: audioUrl
-        };
-
-        audio.src = currentSong.url;
-        await audio.play().catch(function () {
-          // Autoplay bloqueado; el usuario pulsará play
-        });
-
-        actualizarInterfazReproductor();
-        return;
-      } catch (err) {
-        ultimoError = err;
-        console.warn('Instancia falló para cargar canción:', INVIDIOUS_INSTANCES[i], err.message);
+      const res = await fetch(urlProxy);
+      if (!res.ok) {
+        throw new Error('HTTP ' + res.status + ' desde ' + instancia);
       }
+
+      const texto = await res.text();
+      let vid;
+      try {
+        vid = JSON.parse(texto);
+      } catch (e) {
+        throw new Error('Respuesta no es JSON válido desde ' + instancia);
+      }
+
+      let audioUrl = null;
+      const formats = vid.adaptiveFormats || [];
+
+      const f = formats.find(function (x) {
+        return x.itag === 140 || (x.contentType && x.contentType.startsWith('audio/'));
+      });
+
+      if (f && f.url) {
+        audioUrl = f.url;
+      } else {
+        const fs = vid.formatStreams || [];
+        const f2 = fs.find(function (x) {
+          return x.itag === 140 || (x.type && x.type.includes('audio'));
+        });
+        if (f2 && f2.url) audioUrl = f2.url;
+      }
+
+      if (!audioUrl) throw new Error('No se encontró stream de audio directo (itag=140)');
+
+      // Éxito
+      INVIDIOUS = instancia;
+      INVIDIOUS_INDEX = i;
+
+      currentSong = {
+        id: vid.videoId || item.videoId,
+        title: vid.title || item.title,
+        artist: vid.author || item.author,
+        thumb: (vid.thumbnails && vid.thumbnails[0] && vid.thumbnails[0].url)
+          ? vid.thumbnails[0].url
+          : (item.thumbnails && item.thumbnails[0] ? item.thumbnails[0].url : ''),
+        url: audioUrl
+      };
+
+      audio.src = currentSong.url;
+      await audio.play().catch(function () {
+        // Autoplay bloqueado; el usuario pulsará play
+      });
+
+      actualizarInterfazReproductor();
+      return;
+    } catch (err) {
+      ultimoError = err;
+      console.warn('Instancia falló para cargar canción:', INVIDIOUS_INSTANCES[i], err.message);
     }
-
-    throw ultimoError || new Error('No se pudo reproducir la canción en ninguna instancia');
-
-  } catch (err) {
-    console.error(err);
-    const detalle = err.message ? err.message : String(err);
-    alert('No se pudo reproducir la canción:\nError: ' + detalle);
   }
+
+  const detalle = (ultimoError && ultimoError.message) ? ultimoError.message : 'Error desconocido';
+  alert('No se pudo reproducir la canción:\nError: ' + detalle);
 }
 
 function actualizarInterfazReproductor() {
   if (!currentSong) return;
-  playerBar.style.display = 'flex';
-  playerThumb.src = currentSong.thumb;
-  playerTitle.textContent = currentSong.title;
-  playerArtist.textContent = currentSong.artist;
-  btnPlayPause.textContent = audio.paused ? '▶' : '⏸';
+  if (playerBar) playerBar.style.display = 'flex';
+  if (playerThumb) playerThumb.src = currentSong.thumb;
+  if (playerTitle) playerTitle.textContent = currentSong.title;
+  if (playerArtist) playerArtist.textContent = currentSong.artist;
+  if (btnPlayPause) btnPlayPause.textContent = audio.paused ? '▶' : '⏸';
 }
 
 // ---------- Controles ----------
-btnPlayPause.onclick = function () {
-  if (!currentSong) return;
-  if (audio.paused) {
-    audio.play().catch(function () {});
-  } else {
-    audio.pause();
-  }
-};
+function initControles() {
+  if (!btnPlayPause || !progressBar || !audio) return;
 
-audio.onplay = function () {
-  btnPlayPause.textContent = '⏸';
-};
+  btnPlayPause.onclick = function () {
+    if (!currentSong) return;
+    if (audio.paused) {
+      audio.play().catch(function () {});
+    } else {
+      audio.pause();
+    }
+  };
 
-audio.onpause = function () {
-  btnPlayPause.textContent = '▶';
-};
+  audio.onplay = function () {
+    if (btnPlayPause) btnPlayPause.textContent = '⏸';
+  };
 
-audio.onended = function () {
-  btnPlayPause.textContent = '▶';
-};
+  audio.onpause = function () {
+    if (btnPlayPause) btnPlayPause.textContent = '▶';
+  };
 
-audio.ontimeupdate = function () {
-  if (audio.duration) {
-    progressBar.max = audio.duration;
-    progressBar.value = audio.currentTime;
-  }
-  timeCurrent.textContent = fmtTime(audio.currentTime);
-  timeDuration.textContent = fmtTime(audio.duration);
-};
+  audio.onended = function () {
+    if (btnPlayPause) btnPlayPause.textContent = '▶';
+  };
 
-progressBar.oninput = function () {
-  if (audio.duration) {
-    audio.currentTime = progressBar.value;
-  }
-};
+  audio.ontimeupdate = function () {
+    if (audio.duration && progressBar) {
+      progressBar.max = audio.duration;
+      progressBar.value = audio.currentTime;
+    }
+    if (timeCurrent) timeCurrent.textContent = fmtTime(audio.currentTime);
+    if (timeDuration) timeDuration.textContent = fmtTime(audio.duration);
+  };
 
-// ---------- Registro Service Worker (PWA offline) ----------
-if ('serviceWorker' in navigator) {
-  navigator.serviceWorker.register('./sw.js').then(function (reg) {
-    console.log('SW registrado:', reg.scope);
-  }).catch(function (err) {
-    console.error('Error al registrar SW:', err);
-  });
+  progressBar.oninput = function () {
+    if (audio.duration) {
+      audio.currentTime = progressBar.value;
+    }
+  };
 }
 
 // ---------- Eventos de búsqueda ----------
-searchBtn.onclick = function () {
-  const q = searchInput.value.trim();
-  if (q) buscar(q);
-};
+function initBusqueda() {
+  if (!searchBtn || !searchInput) return;
 
-searchInput.addEventListener('keydown', function (e) {
-  if (e.key === 'Enter') {
-    e.preventDefault();
+  searchBtn.onclick = function () {
     const q = searchInput.value.trim();
     if (q) buscar(q);
+  };
+
+  searchInput.addEventListener('keydown', function (e) {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      const q = searchInput.value.trim();
+      if (q) buscar(q);
+    }
+  });
+}
+
+// ---------- Registro Service Worker (PWA offline) ----------
+function initSW() {
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.register('./sw.js').then(function (reg) {
+      console.log('SW registrado:', reg.scope);
+    }).catch(function (err) {
+      console.error('Error al registrar SW:', err);
+    });
   }
+}
+
+// ---------- Inicialización cuando el DOM esté listo ----------
+document.addEventListener('DOMContentLoaded', function () {
+  obtenerElementos();
+  initSW();
+  initControles();
+  initBusqueda();
 });

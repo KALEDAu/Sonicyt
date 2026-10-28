@@ -659,3 +659,46 @@ body {
 
 /* Scrollbars discretas */
 .carousel::-webkit-scrollbar, .chips::-webkit-scrollbar { display: none; }
+
+/* ---------- Estado de extensiones (cascarón modular) ---------- */
+.ext-status {
+  margin: 0 0 8px;
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 0.2px;
+  color: rgba(140, 238, 186, 0.9);
+  text-align: center;
+}
+.ext-status.aviso { color: #f3c137; }
+.ext-status.error { color: #ff6b6b; }
+
+/* ---------- LOG de búsqueda ---------- */
+.log-line {
+  color: #1DB954;
+  text-align: center;
+  font-weight: 700;
+  font-size: 13px;
+  margin: 18px 0;
+}
+
+/* ---------- Biblioteca: etiqueta de pista (completa/preview) ---------- */
+.row-tag {
+  align-self: flex-start;
+  margin-top: 5px;
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.6px;
+  border-radius: 4px;
+  padding: 2px 7px;
+  color: #f3c137;
+  background: rgba(243, 193, 55, 0.12);
+  border: 1px solid rgba(243, 193, 55, 0.3);
+}
+.row-tag.full {
+  color: #8ceeba;
+  background: rgba(29, 185, 84, 0.14);
+  border: 1px solid rgba(29, 185, 84, 0.35);
+}
+
+/* La carátula de la biblioteca nunca queda en blanco */
+.row-art { background: #191919 center / cover no-repeat; }

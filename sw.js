@@ -1,10 +1,10 @@
 /* ========================================
    Sonicyt — Service Worker (PWA)
-   Caché v7-auto: fusión automática + conectores en extensions/
+   Caché v7-soundcloud: audio completo vía SoundCloud + Audius
    ======================================== */
 
-const CACHE_NAME = 'sonicyt-v7-auto';
-const CACHE_ANTERIOR = 'sonicyt-v7-modular';
+const CACHE_NAME = 'sonicyt-v7-soundcloud';
+const CACHE_ANTERIOR = 'sonicyt-v7-auto';
 
 const STATIC_ASSETS = [
   './',

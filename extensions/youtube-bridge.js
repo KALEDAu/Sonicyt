@@ -1,35 +1,49 @@
 /* ==========================================================================
    Sonicyt Extension · youtube-bridge.js
-   Conector de AUDIO COMPLETO (itag 141/140 m4a) vía Invidious.
-   Estrategia AGRESIVA: no espera turnos. Dispara en paralelo todas las
-   instancias + sus variantes proxificadas (allorigins / codetabs) y se
-   queda con la primera respuesta JSON válida. Sin cookies: credentials omit.
+   Audio COMPLETO sin Invidious.
+
+   Fuente primaria : SoundCloud público (widget API + relay con CORS).
+                     Solo acepta pistas ALLOW de duración completa.
+                     Su stream es HLS: se usa únicamente si el navegador
+                     puede reproducirlo (Safari/iOS).
+   Fuente de apoyo : Audius (MP3 progresivo real, CORS abierto).
+                     Necesaria en Chrome Android, que no reproduce HLS
+                     dentro de un <audio>.
 
    Registro: window.SonicytExtensions['youtube']
      - capacidades: ['resolve']
-     - resolve({ artist, title }, { timeoutMs }) -> Promise<urlMp3Completo>
+     - resolve({ artist, title }, { timeoutMs }) -> Promise<urlAudioCompleto>
+     - resolveTrack(...) -> Promise<{ id, title, artist, image, audio, completa }>
      - cancelar() aborta la resolución en curso
+
+   El formato devuelto respeta el contrato del cascarón:
+     id, title, artist, image, audio (+ completa)
    ========================================================================== */
 (function () {
   'use strict';
 
   window.SonicytExtensions = window.SonicytExtensions || {};
 
-  var SERVIDORES_INVIDIOUS = [
-    'https://tux.digital',
-    'https://projectsegfau.lt',
-    'https://yewtu.be'
+  // ---- SoundCloud público -------------------------------------------------
+  // client_id del reproductor widget oficial (públicos, sin registro de app)
+  var SC_CLIENT_IDS = [
+    'gqKBMSuBw5rbN9rDRYPqKNvF17ovlObu',
+    'nIjtjiYnjkOhMyh5xrbqEW12DxeJVnic'
   ];
+  var SC_API = 'https://api-widget.soundcloud.com';
+  // Relay CORS: la API del widget solo autoriza orígenes de soundcloud.com.
+  // Jina Reader devuelve el JSON con Access-Control-Allow-Origin y sin cookies.
+  var RELAY_CORS = 'https://r.jina.ai/';
 
-  // Proxies CORS acoplados DENTRO de la extensión (el cascarón no los conoce).
-  // "raw" devuelve el cuerpo tal cual; se codifica la URL destino completa.
-  var PROXIES_CORS = [
-    'https://api.allorigins.win/raw?url=',
-    'https://api.codetabs.com/v1/proxy?quest='
-  ];
+  // ---- Audius (MP3 completo) ----------------------------------------------
+  var AUDIUS_API = 'https://api.audius.co';
+  var APP_NAME = 'Sonicyt';
 
   var TIMEOUT_POR_DEFECTO = 3000;
+  // Ventana en la que se espera a SoundCloud antes de usar Audius.
+  var VENTANA_PREFERENCIA_MS = 900;
   var controladorActivo = null;
+  var hlsSoportado = null;
 
   function esAborto(err) {
     return !!err && err.name === 'AbortError';
@@ -42,17 +56,227 @@
     }
   }
 
-  // Cada URL directa se multiplica por los proxies disponibles
-  function candidatosPara(urlDirecta) {
-    var lista = [urlDirecta];
-    for (var p = 0; p < PROXIES_CORS.length; p++) {
-      lista.push(PROXIES_CORS[p] + encodeURIComponent(urlDirecta));
+  function puedeReproducirHls() {
+    if (hlsSoportado !== null) return hlsSoportado;
+    try {
+      var prueba = document.createElement('audio');
+      hlsSoportado = !!prueba.canPlayType('application/vnd.apple.mpegurl');
+    } catch (e) {
+      hlsSoportado = false;
     }
-    return lista;
+    return hlsSoportado;
   }
 
-  // Fetch sin cookies ni caché; tolera content-type mentiroso del proxy
-  function pedirJson(url, signal) {
+  // ---------------------------------------------------------------- utilidades
+  function normalizarTexto(valor) {
+    return String(valor || '').toLowerCase()
+      .replace(/[áàäâ]/g, 'a').replace(/[éèëê]/g, 'e').replace(/[íìïî]/g, 'i')
+      .replace(/[óòöô]/g, 'o').replace(/[úùüû]/g, 'u').replace(/ñ/g, 'n')
+      .replace(/[^a-z0-9 ]/g, ' ').replace(/\s+/g, ' ').trim();
+  }
+
+  function nombreArtista(pista) {
+    if (!pista || !pista.user) return '';
+    return pista.user.name || pista.user.username || '';
+  }
+
+  // Puntúa la coincidencia título/artista para elegir el resultado más fiel
+  function puntuar(pista, artista, titulo) {
+    var objetivo = normalizarTexto(artista + ' ' + titulo);
+    var texto = normalizarTexto((pista.title || '') + ' ' + nombreArtista(pista));
+    var palabras = objetivo.split(' ').filter(function (w) { return w.length > 2; });
+    if (!palabras.length) return 0;
+    var aciertos = 0;
+    for (var i = 0; i < palabras.length; i++) {
+      if (texto.indexOf(palabras[i]) !== -1) aciertos += 1;
+    }
+    return aciertos / palabras.length;
+  }
+
+  function elegirMejor(lista, artista, titulo) {
+    var mejor = lista[0];
+    var mejorPuntos = -1;
+    for (var i = 0; i < lista.length; i++) {
+      var puntos = puntuar(lista[i], artista, titulo);
+      if (puntos > mejorPuntos) {
+        mejorPuntos = puntos;
+        mejor = lista[i];
+      }
+    }
+    return mejor;
+  }
+
+  // SoundCloud es la fuente preferida, pero su resolución encadena dos relés
+  // (búsqueda + transcoding) y tarda más que Audius, que responde en una sola
+  // petición. Si compitieran en igualdad, Audius ganaría siempre y SoundCloud
+  // quedaría muerto. Por eso se le da una ventana de preferencia corta:
+  //   - SoundCloud gana si responde dentro de esa ventana.
+  //   - Audius se usa en cuanto la ventana expira o SoundCloud falla.
+  function resolverConPreferencia(promesaPreferida, promesaRespaldo, graciaMs) {
+    return new Promise(function (resolve, reject) {
+      var decidido = false;
+      var graciaAgotada = false;
+      var preferidaTerminada = false;
+      var fallos = 0;
+      var respaldo = null; // { valor: ... } | { error: ... }
+
+      function terminar(valor, error) {
+        if (decidido) return;
+        decidido = true;
+        clearTimeout(temporizador);
+        if (valor) { resolve(valor); return; }
+        if (esAborto(error)) { reject(error); return; }
+        reject(new Error('Ninguna fuente devolvió audio completo' +
+          (fallos ? ' (' + fallos + ' fallos)' : '')));
+      }
+
+      function usarRespaldo() {
+        if (!respaldo) return;
+        if (respaldo.valor) terminar(respaldo.valor);
+        else terminar(null, respaldo.error);
+      }
+
+      var temporizador = setTimeout(function () {
+        graciaAgotada = true;
+        usarRespaldo();
+      }, graciaMs);
+
+      promesaPreferida.then(function (valor) {
+        preferidaTerminada = true;
+        if (valor) terminar(valor);
+        else { fallos += 1; usarRespaldo(); }
+      }, function (err) {
+        preferidaTerminada = true;
+        if (esAborto(err)) terminar(null, err);
+        else { fallos += 1; usarRespaldo(); }
+      });
+
+      promesaRespaldo.then(function (valor) {
+        respaldo = { valor: valor };
+        if (!valor) fallos += 1;
+        // Si la preferida ya terminó sin resultado, no se espera la ventana
+        if (graciaAgotada || preferidaTerminada) usarRespaldo();
+      }, function (err) {
+        respaldo = { error: err };
+        fallos += 1;
+        if (graciaAgotada || preferidaTerminada) usarRespaldo();
+      });
+    });
+  }
+
+  // ------------------------------------------------------- SoundCloud (relay)
+  function leerJsonRelay(urlDestino, signal) {
+    return fetch(RELAY_CORS + urlDestino, {
+      method: 'GET',
+      mode: 'cors',
+      credentials: 'omit',
+      cache: 'no-store',
+      referrerPolicy: 'no-referrer',
+      headers: { 'Accept': 'text/plain' },
+      signal: signal
+    }).then(function (res) {
+      if (!res.ok) throw new Error('Relay HTTP ' + res.status);
+      return res.text();
+    }).then(function (texto) {
+      var marca = 'Markdown Content:';
+      var corte = texto.indexOf(marca);
+      var crudo = (corte === -1) ? texto : texto.slice(corte + marca.length);
+      var inicio = crudo.indexOf('{');
+      if (inicio === -1) throw new Error('Relay sin JSON');
+      try {
+        return JSON.parse(crudo.slice(inicio));
+      } catch (e) {
+        throw new Error('Relay JSON inválido');
+      }
+    });
+  }
+
+  // Solo pistas ALLOW completas: descarta SNIP/MONETIZE (30 s) y previews
+  function filtrarSoundCloud(coleccion) {
+    var salida = [];
+    var lista = coleccion || [];
+    for (var i = 0; i < lista.length; i++) {
+      var t = lista[i];
+      if (!t || !t.streamable || t.policy !== 'ALLOW') continue;
+      var total = t.full_duration || t.duration || 0;
+      if (!t.duration || total <= 0) continue;
+      if (t.duration < total * 0.98) continue;
+      var transcodings = (t.media && t.media.transcodings) || [];
+      if (!transcodings.length) continue;
+      salida.push(t);
+    }
+    return salida;
+  }
+
+  function streamSoundCloud(pista, clientId, signal) {
+    var transcodings = (pista.media && pista.media.transcodings) || [];
+    var elegido = null;
+
+    for (var i = 0; i < transcodings.length; i++) {
+      var tr = transcodings[i];
+      if (tr.format && tr.format.protocol === 'progressive') { elegido = tr; break; }
+    }
+    if (!elegido) elegido = transcodings[0];
+    if (!elegido) return Promise.resolve(null);
+
+    var sep = elegido.url.indexOf('?') === -1 ? '?' : '&';
+    return leerJsonRelay(elegido.url + sep + 'client_id=' + clientId, signal)
+      .then(function (datos) {
+        var url = datos && datos.url;
+        if (!url) return null;
+
+        var hls = (elegido.format && elegido.format.protocol === 'hls') ||
+          url.indexOf('.m3u8') !== -1;
+
+        // Chrome Android no reproduce HLS en <audio>: se descarta
+        if (hls && !puedeReproducirHls()) return null;
+
+        return {
+          id: 'sc-' + pista.id,
+          title: pista.title || '',
+          artist: nombreArtista(pista),
+          image: pista.artwork_url || (pista.user && pista.user.avatar_url) || '',
+          audio: url,
+          completa: true,
+          fuente: 'soundcloud',
+          hls: hls
+        };
+      });
+  }
+
+  function buscarSoundCloud(consulta, artista, titulo, signal) {
+    var indice = 0;
+
+    function intentar() {
+      if (indice >= SC_CLIENT_IDS.length) return Promise.resolve(null);
+      var clientId = SC_CLIENT_IDS[indice];
+      indice += 1;
+
+      var url = SC_API + '/search/tracks?q=' + encodeURIComponent(consulta) +
+        '&limit=8&client_id=' + clientId;
+
+      return leerJsonRelay(url, signal).then(function (datos) {
+        var pistas = filtrarSoundCloud(datos && datos.collection);
+        if (!pistas.length) return intentar();
+        return streamSoundCloud(elegirMejor(pistas, artista, titulo), clientId, signal)
+          .then(function (resultado) {
+            if (resultado) return resultado;
+            return intentar();
+          });
+      }).catch(function (err) {
+        if (esAborto(err)) throw err;
+        return intentar();
+      });
+    }
+
+    return intentar();
+  }
+
+  // -------------------------------------------------------- Audius (MP3 real)
+  function buscarAudius(consulta, artista, titulo, signal) {
+    var url = AUDIUS_API + '/v1/tracks/search?query=' + encodeURIComponent(consulta) +
+      '&app_name=' + encodeURIComponent(APP_NAME) + '&limit=10';
+
     return fetch(url, {
       method: 'GET',
       mode: 'cors',
@@ -62,138 +286,49 @@
       headers: { 'Accept': 'application/json' },
       signal: signal
     }).then(function (res) {
-      if (!res.ok) throw new Error('HTTP ' + res.status);
-      return res.text();
-    }).then(function (texto) {
-      try {
-        return JSON.parse(texto);
-      } catch (e) {
-        throw new Error('Respuesta no JSON');
+      if (!res.ok) throw new Error('Audius HTTP ' + res.status);
+      return res.json();
+    }).then(function (datos) {
+      var lista = (datos && datos.data) || [];
+      var validas = [];
+
+      for (var i = 0; i < lista.length; i++) {
+        var t = lista[i];
+        if (!t || !t.track_id || t.is_streamable === false) continue;
+        validas.push(t);
       }
-    });
-  }
+      if (!validas.length) return null;
 
-  // Carrera real: primera respuesta válida gana; el resto se ignora
-  function carreraCandidatos(urls, validar, signal) {
-    return new Promise(function (resolve, reject) {
-      var pendientes = urls.length;
-      var errores = [];
-      var terminado = false;
+      var mejor = elegirMejor(validas, artista, titulo);
+      if (!mejor) return null;
 
-      if (pendientes === 0) {
-        reject(new Error('Sin candidatos disponibles'));
-        return;
-      }
-
-      urls.forEach(function (url) {
-        pedirJson(url, signal).then(function (data) {
-          var valido = validar(data);
-          if (!valido) throw new Error('Respuesta sin datos útiles');
-          if (!terminado) {
-            terminado = true;
-            resolve(valido);
-          }
-        }).catch(function (err) {
-          if (esAborto(err)) {
-            if (!terminado) {
-              terminado = true;
-              reject(err);
-            }
-            return;
-          }
-          errores.push(err.message);
-          pendientes -= 1;
-          if (pendientes === 0 && !terminado) {
-            terminado = true;
-            reject(new Error('Todos los candidatos fallaron (' + errores.length + ' intentos)'));
-          }
-        });
-      });
-    });
-  }
-
-  // Paso 1: artista + título → videoId (carrera de instancias y proxies)
-  function buscarVideoId(consulta, signal) {
-    var candidatos = [];
-    for (var i = 0; i < SERVIDORES_INVIDIOUS.length; i++) {
-      var url = SERVIDORES_INVIDIOUS[i] + '/api/v1/search?q=' +
-        encodeURIComponent(consulta) + '&type=video&sort_by=relevance';
-      candidatos = candidatos.concat(candidatosPara(url));
-    }
-
-    return carreraCandidatos(candidatos, function (data) {
-      if (Array.isArray(data) && data.length > 0 && data[0].videoId) {
-        return data[0].videoId;
-      }
-      return null;
-    }, signal);
-  }
-
-  // Paso 2: videoId → stream de audio (prioriza m4a de mayor calidad)
-  function extraerAudio(videoId, signal) {
-    var candidatos = [];
-    for (var i = 0; i < SERVIDORES_INVIDIOUS.length; i++) {
-      var url = SERVIDORES_INVIDIOUS[i] + '/api/v1/videos/' + encodeURIComponent(videoId);
-      candidatos = candidatos.concat(candidatosPara(url));
-    }
-
-    return carreraCandidatos(candidatos, function (video) {
-      if (!video || !Array.isArray(video.adaptiveFormats)) return null;
-
-      var formatos = video.adaptiveFormats;
-      var itag141 = null;
-      var itag140 = null;
-      var mp4 = null;
-      var generico = null;
-
-      for (var f = 0; f < formatos.length; f++) {
-        var item = formatos[f];
-        if (!item || !item.url) continue;
-        var tipo = item.contentType || '';
-
-        if (item.itag === 141) { if (!itag141) itag141 = item; continue; }
-        if (item.itag === 140) { if (!itag140) itag140 = item; continue; }
-        if (tipo.indexOf('audio/mp4') === 0) {
-          if (!mp4 || (item.bitrate || 0) > (mp4.bitrate || 0)) mp4 = item;
-          continue;
-        }
-        if (tipo.indexOf('audio/') === 0) {
-          if (!generico || (item.bitrate || 0) > (generico.bitrate || 0)) generico = item;
-        }
-      }
-
-      var elegido = itag141 || itag140 || mp4 || generico;
-      if (!elegido) return null;
-
-      var miniatura = '';
-      if (video.videoThumbnails && video.videoThumbnails.length) {
-        miniatura = video.videoThumbnails[0].url || '';
+      var arte = '';
+      if (mejor.artwork) {
+        arte = mejor.artwork['480x480'] || mejor.artwork['150x150'] || '';
       }
 
       return {
-        url: elegido.url,
-        itag: elegido.itag,
-        tipo: elegido.contentType || '',
-        bitrate: elegido.bitrate || 0,
-        titulo: video.title || '',
-        autor: video.author || '',
-        miniatura: miniatura
+        id: 'aud-' + mejor.track_id,
+        title: mejor.title || '',
+        artist: nombreArtista(mejor),
+        image: arte,
+        audio: AUDIUS_API + '/v1/tracks/' + mejor.track_id + '/stream?app_name=' + encodeURIComponent(APP_NAME),
+        completa: true,
+        fuente: 'audius'
       };
-    }, signal);
+    });
   }
 
-  function resolver(pista, opciones) {
+  // ------------------------------------------------------------- resolución
+  function resolverTrack(pista, opciones) {
     var opts = opciones || {};
     var timeoutMs = opts.timeoutMs || TIMEOUT_POR_DEFECTO;
     var datos = pista || {};
+    var artista = datos.artist || '';
+    var titulo = datos.title || '';
+    var consulta = (artista + ' ' + titulo).trim() || String(datos.consulta || '').trim();
 
-    var consulta = '';
-    if (datos.artist) consulta += datos.artist;
-    if (datos.title) consulta += ' ' + datos.title;
-    consulta = consulta.trim();
-    if (!consulta && datos.consulta) consulta = String(datos.consulta).trim();
-
-    if (!consulta && !datos.videoId) {
+    if (!consulta) {
       return Promise.reject(new Error('Pista sin artista/título para buscar audio completo'));
     }
 
@@ -202,25 +337,41 @@
     controladorActivo = controlador;
 
     var timer = setTimeout(function () { controlador.abort(); }, timeoutMs);
+    var internos = [];
+
+    function senal() {
+      var c = new AbortController();
+      internos.push(c);
+      if (controlador.signal.aborted) {
+        try { c.abort(); } catch (e) { /* ya abortado */ }
+      } else {
+        controlador.signal.addEventListener('abort', function () {
+          try { c.abort(); } catch (e) { /* ya abortado */ }
+        });
+      }
+      return c.signal;
+    }
+
+    // SoundCloud tiene prioridad; Audius cubre el hueco con su MP3 real
+    var ventanaPreferencia = Math.min(VENTANA_PREFERENCIA_MS, Math.max(150, Math.floor(timeoutMs / 2)));
+    var fuentes = resolverConPreferencia(
+      buscarSoundCloud(consulta, artista, titulo, senal()),
+      buscarAudius(consulta, artista, titulo, senal()),
+      ventanaPreferencia
+    );
 
     function limpiar() {
       clearTimeout(timer);
+      for (var i = 0; i < internos.length; i++) {
+        try { internos[i].abort(); } catch (e) { /* ya abortado */ }
+      }
       if (controladorActivo === controlador) controladorActivo = null;
     }
 
-    var pasos;
-    if (datos.videoId) {
-      pasos = extraerAudio(datos.videoId, controlador.signal);
-    } else {
-      pasos = buscarVideoId(consulta, controlador.signal).then(function (videoId) {
-        return extraerAudio(videoId, controlador.signal);
-      });
-    }
-
-    return pasos.then(
-      function (audio) {
+    return fuentes.then(
+      function (resultado) {
         limpiar();
-        return audio.url;
+        return resultado;
       },
       function (err) {
         limpiar();
@@ -229,21 +380,27 @@
     );
   }
 
+  function resolver(pista, opciones) {
+    return resolverTrack(pista, opciones).then(function (resultado) {
+      return resultado.audio;
+    });
+  }
+
   window.SonicytExtensions['youtube'] = {
     id: 'youtube',
-    nombre: 'YouTube Bridge',
-    version: '1.1.0',
+    nombre: 'SoundCloud Bridge',
+    version: '2.0.0',
     tipo: 'audio-completo',
     orden: 20,
     capacidades: ['resolve'],
-    servidores: SERVIDORES_INVIDIOUS,
-    proxies: PROXIES_CORS,
+    proveedores: ['soundcloud', 'audius'],
     timeoutPorDefecto: TIMEOUT_POR_DEFECTO,
-    candidatosPara: candidatosPara,
-    pedirJson: pedirJson,
-    buscarVideoId: buscarVideoId,
-    extraerAudio: extraerAudio,
+    ventanaPreferenciaMs: VENTANA_PREFERENCIA_MS,
+    clientIdsSoundCloud: SC_CLIENT_IDS,
+    relayCors: RELAY_CORS,
+    puedeReproducirHls: puedeReproducirHls,
     cancelar: cancelar,
+    resolveTrack: resolverTrack,
     resolve: resolver
   };
 })();

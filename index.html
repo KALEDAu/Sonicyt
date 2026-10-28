@@ -61,50 +61,10 @@ const INVIDIOUS_INSTANCES = [
   'https://yewtu.be'
 ];
 
-// ---------- Canciones locales con streaming directo (.mp3 domino público) ----------
-// Respaldo automático cuando las APIs externas fallan por CORS o de servidor
-const CANCIONES_LOCALES = [
-  {
-    id: 'local-1',
-    title: 'SoundHelix Song 1',
-    author: 'T. Schürger (MP3 directo)',
-    thumbnails: [{ url: 'https://via.placeholder.com/320x180/0b0b0b/1DB954.png?text=%E2%99%AA' }],
-    direct: true,
-    audioUrl: 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3'
-  },
-  {
-    id: 'local-2',
-    title: 'SoundHelix Song 2',
-    author: 'T. Schürger (MP3 directo)',
-    thumbnails: [{ url: 'https://via.placeholder.com/320x180/0b0b0b/1DB954.png?text=%E2%99%AB' }],
-    direct: true,
-    audioUrl: 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-2.mp3'
-  },
-  {
-    id: 'local-3',
-    title: 'SoundHelix Song 3',
-    author: 'T. Schürger (MP3 directo)',
-    thumbnails: [{ url: 'https://via.placeholder.com/320x180/0b0b0b/1DB954.png?text=%E2%99%AC' }],
-    direct: true,
-    audioUrl: 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-3.mp3'
-  },
-  {
-    id: 'local-4',
-    title: 'SoundHelix Song 4',
-    author: 'T. Schürger (MP3 directo)',
-    thumbnails: [{ url: 'https://via.placeholder.com/320x180/0b0b0b/1DB954.png?text=%E2%99%AD' }],
-    direct: true,
-    audioUrl: 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-4.mp3'
-  },
-  {
-    id: 'local-5',
-    title: 'SoundHelix Song 5',
-    author: 'T. Schürger (MP3 directo)',
-    thumbnails: [{ url: 'https://via.placeholder.com/320x180/0b0b0b/1DB954.png?text=%E2%99%8F' }],
-    direct: true,
-    audioUrl: 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-5.mp3'
-  }
-];
+// ---------- API pública de Jamendo (CORS nativo abierto, música real con MP3 directo) ----------
+// Client_id de ejemplos oficiales de la documentación de Jamendo ( developers.jamendo.com )
+const JAMENDO_CLIENT_ID = '56d30c95';
+const JAMENDO_API = 'https://api.jamendo.com/v3.0/tracks/?client_id=' + JAMENDO_CLIENT_ID + '&format=json&limit=20&sort=relevance&search=';
 
 let INVIDIOUS = INVIDIOUS_INSTANCES[0];
 let INVIDIOUS_INDEX = 0;
@@ -161,53 +121,39 @@ function setEstado(mensaje, esError = false) {
   resultsEl.appendChild(p);
 }
 
-// ---------- Búsqueda en Invidious con conexión DIRECTA (sin proxy) y fallback local ----------
+// ---------- Búsqueda de música REAL en Jamendo (API abierta con CORS nativo) ----------
 async function buscar(q) {
   // PRIMERÍSIMA LÍNEA: mostrar mensaje de conexión al instante
-  document.getElementById('results').innerHTML = '<p style="color: #1DB954; text-align: center; font-weight: bold;">[LOG] El botón reacciona. Conectando directamente sin proxy...</p>';
+  document.getElementById('results').innerHTML = '<p style="color: #1DB954; text-align: center; font-weight: bold;">[LOG] El botón reacciona. Buscando en Jamendo...</p>';
 
-  let ultimoError = null;
+  const url = JAMENDO_API + encodeURIComponent(q);
 
-  for (let i = 0; i < INVIDIOUS_INSTANCES.length; i++) {
-    try {
-      const instancia = INVIDIOUS_INSTANCES[i];
-      const urlInvidious = instancia + '/api/v1/search?q=' + encodeURIComponent(q) + '&type=video';
-
-      console.log('Probando instancia directa:', instancia);
-
-      // Conexión DIRECTA sin proxy intermedio, modo cors nativo
-      const res = await fetch(urlInvidious, { mode: 'cors' });
-
-      if (!res.ok) {
-        throw new Error('HTTP ' + res.status + ' desde ' + instancia);
-      }
-
-      const texto = await res.text();
-      let data;
-      try {
-        data = JSON.parse(texto);
-      } catch (e) {
-        throw new Error('Respuesta no es JSON válido desde ' + instancia);
-      }
-
-      // Éxito: guardar instancia activa
-      INVIDIOUS = instancia;
-      INVIDIOUS_INDEX = i;
-
-      renderizar(data || []);
-      return;
-    } catch (err) {
-      ultimoError = err;
-      console.warn('Instancia directa falló:', INVIDIOUS_INSTANCES[i], err.message);
+  try {
+    const res = await fetch(url, { mode: 'cors' });
+    if (!res.ok) {
+      throw new Error('HTTP ' + res.status + ' desde la API de Jamendo');
     }
-  }
 
-  // Todas las instancias fallaron (CORS o caída): usar dataset local de streaming directo
-  // para que el usuario SIEMPRE vea resultados reales reproducibles
-  setEstado('APIs externas no disponibles (CORS bloqueado). Mostrando canciones directas MP3...', false);
-  setTimeout(function () {
-    renderizar(CANCIONES_LOCALES);
-  }, 1500);
+    const texto = await res.text();
+    let data;
+    try {
+      data = JSON.parse(texto);
+    } catch (e) {
+      throw new Error('Respuesta de Jamendo no es JSON válido');
+    }
+
+    // Resultados reales de canciones con nombre, artista, portada y mp3 directo
+    const resultados = (data.results || []);
+    if (resultados.length === 0) {
+      setEstado('No se encontraron canciones para "' + q + '"', false);
+      return;
+    }
+    renderizar(resultados);
+  } catch (err) {
+    // Error exacto en pantalla en rojo
+    const detalle = (err && err.message) ? err.message : String(err);
+    setEstado('Error: ' + detalle, true);
+  }
 }
 
 function renderizar(items) {
@@ -219,17 +165,23 @@ function renderizar(items) {
   }
 
   items.forEach(function (it) {
-    const thumbUrl = (it.thumbnails && it.thumbnails[0] && it.thumbnails[0].url)
-      ? it.thumbnails[0].url
-      : 'https://via.placeholder.com/320x180.png?text=Audio';
+    // Campos reales de Jamendo: name (título), artist_name (artista), image (portada), audio (mp3 directo)
+    // Soporte también de formato Invidious (thumbnails[] / title / author)
+    const thumbUrl = it.image
+      ? it.image
+      : (it.thumbnails && it.thumbnails[0] && it.thumbnails[0].url)
+        ? it.thumbnails[0].url
+        : 'https://via.placeholder.com/320x180.png?text=Audio';
+    const titulo = it.name || it.title || 'Sin título';
+    const artista = it.artist_name || it.author || 'Artista desconocido';
 
     const card = document.createElement('div');
     card.className = 'result-card';
     card.innerHTML =
       '<div class="thumb"><img src="' + escapeHtml(thumbUrl) + '" alt=""></div>' +
       '<div class="info">' +
-      '<div class="title">' + escapeHtml(it.title) + '</div>' +
-      '<div class="artist">' + escapeHtml(it.author) + '</div>' +
+      '<div class="title">' + escapeHtml(titulo) + '</div>' +
+      '<div class="artist">' + escapeHtml(artista) + '</div>' +
       '</div>';
 
     card.onclick = function () {
@@ -242,14 +194,14 @@ function renderizar(items) {
 
 // ---------- Cargar canción y extraer audio directo ----------
 async function cargarCancion(item) {
-  // Canciones del dataset local: reproducir MP3 directo sin fetch ni proxies
-  if (item.direct && item.audioUrl) {
+  // Jamendo entrega 'audio' con el stream MP3 directo: mandarlo al reproductor al instante
+  if (item.audio) {
     currentSong = {
       id: item.id,
-      title: item.title,
-      artist: item.author,
-      thumb: (item.thumbnails && item.thumbnails[0] ? item.thumbnails[0].url : ''),
-      url: item.audioUrl
+      title: item.name || item.title,
+      artist: item.artist_name || item.author,
+      thumb: item.image || '',
+      url: item.audio
     };
     audio.src = currentSong.url;
     await audio.play().catch(function () {

@@ -62,7 +62,7 @@ const INVIDIOUS_INSTANCES = [
 ];
 
 // Proxy CORS gratuito para evitar bloqueos desde github.io
-const CORS_PROXY = 'https://api.allorigins.win/raw?url=';
+const CORS_PROXY = 'https://codetabs.com/proxy?url=';
 
 let INVIDIOUS = INVIDIOUS_INSTANCES[0];
 let INVIDIOUS_INDEX = 0;
@@ -172,8 +172,17 @@ async function buscar(q) {
     }
   }
 
-  // Todas fallaron: mostrar error exacto en pantalla
-  const detalle = (ultimoError && ultimoError.message) ? ultimoError.message : 'Error desconocido';
+  // Todas fallaron: mostrar error exacto en pantalla con detalle de estatus
+  let detalle = 'Error desconocido';
+  if (ultimoError) {
+    if (ultimoError.status) {
+      detalle = 'HTTP ' + ultimoError.status + ' - ' + ultimoError.message;
+    } else if (ultimoError.message) {
+      detalle = ultimoError.message;
+    } else {
+      detalle = String(ultimoError);
+    }
+  }
   setEstado('Error: ' + detalle, true);
 }
 

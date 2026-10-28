@@ -151,7 +151,7 @@ const RUTA_EXTENSIONES = [
   'extensions/youtube-bridge.js'
 ];
 
-const TIEMPO_FUSION_MS = 3000;
+const TIEMPO_FUSION_MS = 8000; // la fusión corre en segundo plano: el preview suena al instante
 const GENEROS_RESPALDO = ['Pop', 'Rock', 'Electronic', 'Lofi', 'Jazz', 'Hip-Hop', 'Salsa', 'Metal', 'Clásica'];
 const HIST_KEY = 'sonicyt-historial-v7';
 const HIST_KEY_LEGACY = 'sonicyt-historial-v6';
@@ -167,6 +167,11 @@ let btnNpPrev, btnNpPlay, btnNpNext, btnNpDownload, btnNpDownloadText, npDownloa
 let btnConfig, configPanel, btnCloseConfig, q128Btn, q256Btn;
 let tabBar, carouselNow, gridAlbums, chipsEl, exploreGrid, exploreMsg, biblioGrid, biblioMsg, btnClearHistory;
 let extStatus;
+
+// Reproductor HLS (SoundCloud entrega audio completo en HLS)
+let hlsActivo = null;
+let cargadorHls = null;
+let tokenStream = 0;
 
 let currentSong = null;
 let quality = localStorage.getItem('sonicyt-quality') || '256';
@@ -540,8 +545,18 @@ function reproducirPreview(item) {
     fuente: item.fuente || 'historial'
   };
 
-  audio.src = currentSong.url;
-  audio.play().catch(function () { /* autoplay bloqueado */ });
+  // Un nuevo toque cancela cualquier carga HLS en curso y vuelve al preview
+  tokenStream += 1;
+  detenerHls();
+
+  // Un .m3u8 guardado en el historial no se reproduce directo en Android:
+  // se deja que la fusión resuelva un stream fresco (con hls.js si hace falta)
+  if (currentSong.url && esUrlHls(currentSong.url) && !hlsNativoDisponible()) {
+    npDownloadStatus.textContent = 'Buscando audio completo…';
+  } else {
+    audio.src = currentSong.url;
+    audio.play().catch(function () { /* autoplay bloqueado */ });
+  }
 
   actualizarReproductorMini();
   abrirNowPlaying();
@@ -581,22 +596,107 @@ async function cargarCancion(item) {
   });
 }
 
+function esUrlHls(url) {
+  return String(url || '').toLowerCase().indexOf('.m3u8') !== -1;
+}
+
+function hlsNativoDisponible() {
+  try { return !!audio.canPlayType('application/vnd.apple.mpegurl'); } catch (e) { return false; }
+}
+
+function detenerHls() {
+  if (hlsActivo) {
+    try { hlsActivo.destroy(); } catch (e) { /* ya destruido */ }
+    hlsActivo = null;
+  }
+}
+
+// hls.js solo se descarga la primera vez que hace falta (audio HLS en Android)
+function cargarHlsJs() {
+  if (window.Hls && window.Hls.isSupported()) return Promise.resolve(window.Hls);
+  if (cargadorHls) return cargadorHls;
+
+  cargadorHls = new Promise(function (resolve, reject) {
+    const script = document.createElement('script');
+    script.src = 'https://cdn.jsdelivr.net/npm/hls.js@1/dist/hls.light.min.js';
+    script.async = true;
+    script.onload = function () {
+      cargadorHls = null;
+      if (window.Hls && window.Hls.isSupported()) resolve(window.Hls);
+      else reject(new Error('hls.js no soportado'));
+    };
+    script.onerror = function () {
+      cargadorHls = null;
+      reject(new Error('No se pudo cargar hls.js'));
+    };
+    document.head.appendChild(script);
+  });
+
+  return cargadorHls;
+}
+
 function cambiarStreamSinCortes(urlCompleto) {
   const posicion = audio.currentTime || 0;
   const estabaSonando = !audio.paused;
+  tokenStream += 1;
+  const miToken = tokenStream;
 
-  audio.src = urlCompleto;
-  audio.addEventListener('loadedmetadata', function alCargar() {
+  function finalizarCambio() {
+    currentSong.url = urlCompleto;
+    currentSong.completa = true;
+    actualizacionBadge();
+    agregarAHistorial(currentSong);
+    npDownloadStatus.textContent = 'Audio completo cargado sin cortes ✔';
+  }
+
+  function restaurarPosicion() {
     try { audio.currentTime = posicion; } catch (e) { /* algunos navegadores */ }
-    audio.removeEventListener('loadedmetadata', alCargar);
-  });
-  if (estabaSonando) audio.play().catch(function () {});
+    if (estabaSonando) audio.play().catch(function () {});
+  }
 
-  currentSong.url = urlCompleto;
-  currentSong.completa = true;
-  actualizacionBadge();
-  agregarAHistorial(currentSong);
-  npDownloadStatus.textContent = 'Audio completo cargado sin cortes ✔';
+  // HLS nativo (iOS/Safari): el propio <audio> entiende el .m3u8
+  if (!esUrlHls(urlCompleto) || hlsNativoDisponible()) {
+    detenerHls();
+    audio.src = urlCompleto;
+    audio.addEventListener('loadedmetadata', function alCargar() {
+      restaurarPosicion();
+      audio.removeEventListener('loadedmetadata', alCargar);
+    });
+    if (estabaSonando) audio.play().catch(function () {});
+    finalizarCambio();
+    return;
+  }
+
+  // Android/Chrome: HLS por MSE con hls.js (el CDN de SoundCloud abre CORS)
+  npDownloadStatus.textContent = 'Preparando audio completo…';
+  cargarHlsJs().then(function (Hls) {
+    if (miToken !== tokenStream || !currentSong) return;
+    detenerHls();
+
+    const hls = new Hls({ enableWorker: true });
+    hlsActivo = hls;
+
+    hls.on(Hls.Events.MANIFEST_PARSED, function () {
+      if (miToken !== tokenStream) return;
+      restaurarPosicion();
+      finalizarCambio();
+    });
+
+    hls.on(Hls.Events.ERROR, function (evento, dato) {
+      if (!dato || !dato.fatal) return;
+      detenerHls();
+      if (miToken === tokenStream) {
+        npDownloadStatus.textContent = 'Audio completo no disponible · sigue el preview';
+      }
+    });
+
+    hls.loadSource(urlCompleto);
+    hls.attachMedia(audio);
+  }).catch(function () {
+    if (miToken === tokenStream && currentSong) {
+      npDownloadStatus.textContent = 'Audio completo no disponible · sigue el preview';
+    }
+  });
 }
 
 function actualizarReproductorMini() {

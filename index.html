@@ -63,8 +63,12 @@ const INVIDIOUS_INSTANCES = [
 
 // ---------- API pública de Jamendo (CORS nativo abierto, música real con MP3 directo) ----------
 // Client_id de ejemplos oficiales de la documentación de Jamendo ( developers.jamendo.com )
+// Si está suspendido, regístrate gratis en developer.jamendo.com y pon tu propio client_id aquí
 const JAMENDO_CLIENT_ID = '56d30c95';
 const JAMENDO_API = 'https://api.jamendo.com/v3.0/tracks/?client_id=' + JAMENDO_CLIENT_ID + '&format=json&limit=20&sort=relevance&search=';
+
+// ---------- Búsqueda real alternativa: iTunes Search API (Apple, abierta, sin clave, CORS nativo) ----------
+const ITUNES_API = 'https://itunes.apple.com/search?media=music&entity=song&limit=20&term=';
 
 let INVIDIOUS = INVIDIOUS_INSTANCES[0];
 let INVIDIOUS_INDEX = 0;
@@ -124,35 +128,54 @@ function setEstado(mensaje, esError = false) {
 // ---------- Búsqueda de música REAL en Jamendo (API abierta con CORS nativo) ----------
 async function buscar(q) {
   // PRIMERÍSIMA LÍNEA: mostrar mensaje de conexión al instante
-  document.getElementById('results').innerHTML = '<p style="color: #1DB954; text-align: center; font-weight: bold;">[LOG] El botón reacciona. Buscando en Jamendo...</p>';
+  document.getElementById('results').innerHTML = '<p style="color: #1DB954; text-align: center; font-weight: bold;">[LOG] El botón reacciona. Buscando música real...</p>';
 
-  const url = JAMENDO_API + encodeURIComponent(q);
+  // Fuente 1: API pública de Jamendo (canciones reales con mp3 directo)
+  const urlJamendo = JAMENDO_API + encodeURIComponent(q);
 
   try {
-    const res = await fetch(url, { mode: 'cors' });
+    const res = await fetch(urlJamendo, { mode: 'cors' });
     if (!res.ok) {
       throw new Error('HTTP ' + res.status + ' desde la API de Jamendo');
     }
-
-    const texto = await res.text();
-    let data;
-    try {
-      data = JSON.parse(texto);
-    } catch (e) {
-      throw new Error('Respuesta de Jamendo no es JSON válido');
-    }
-
-    // Resultados reales de canciones con nombre, artista, portada y mp3 directo
-    const resultados = (data.results || []);
-    if (resultados.length === 0) {
-      setEstado('No se encontraron canciones para "' + q + '"', false);
+    const data = await res.json();
+    const resultados = data.results || [];
+    if (resultados.length > 0) {
+      renderizar(resultados);
       return;
     }
-    renderizar(resultados);
-  } catch (err) {
-    // Error exacto en pantalla en rojo
-    const detalle = (err && err.message) ? err.message : String(err);
-    setEstado('Error: ' + detalle, true);
+    throw new Error('Jamendo devolvió 0 canciones');
+  } catch (errJamendo) {
+    console.warn('Jamendo no disponible:', errJamendo.message);
+
+    // Fuente 2 automática: iTunes Search API (open sin clave, CORS nativo, música real)
+    const urlItunes = ITUNES_API + encodeURIComponent(q);
+    try {
+      const resIt = await fetch(urlItunes, { mode: 'cors' });
+      if (!resIt.ok) {
+        throw new Error('HTTP ' + resIt.status + ' desde iTunes');
+      }
+      const dataIt = await resIt.json();
+      const mapped = (dataIt.results || []).map(function (t) {
+        return {
+          id: t.trackId,
+          name: t.trackName,
+          artist_name: t.artistName,
+          image: t.artworkUrl100 ? t.artworkUrl100.replace('100x100bb', '600x600bb') : '',
+          audio: t.previewUrl
+        };
+      });
+      if (mapped.length === 0) {
+        setEstado('No se encontraron canciones para "' + q + '"', false);
+        return;
+      }
+      document.getElementById('results').innerHTML = '<p style="color: #1a8f47; text-align: center; margin-top: 20px;">[LOG] Jamendo no respondió. Resultados vía iTunes Search API (música real).</p>';
+      renderizar(mapped);
+    } catch (errItunes) {
+      // Error exacto en pantalla en rojo
+      const detalle = (errItunes && errItunes.message) ? errItunes.message : String(errItunes);
+      setEstado('Error: ' + detalle, true);
+    }
   }
 }
 

@@ -1,10 +1,10 @@
 /* ========================================
    Sonicyt — Service Worker (PWA)
-   Caché v3: fuerza descarga de index.html unificado
+   Caché v4: interfaz Apple Music unificada
    ======================================== */
 
-const CACHE_NAME = 'sonicyt-v3';
-const CACHE_ANTERIOR = 'sonicyt-v2';
+const CACHE_NAME = 'sonicyt-v4';
+const CACHE_ANTERIOR = 'sonicyt-v3';
 const CACHE_MIUSICA = 'mimusica-v1';
 
 const STATIC_ASSETS = [
@@ -25,7 +25,6 @@ self.addEventListener('install', (event) => {
 
 self.addEventListener('activate', (event) => {
   event.waitUntil(
-    // Borrar cachés anteriores
     caches.delete(CACHE_ANTERIOR).then(() => {
       return caches.delete(CACHE_MIUSICA);
     }).then(() => {

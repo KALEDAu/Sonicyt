@@ -1,11 +1,10 @@
 /* ========================================
    Sonicyt — Service Worker (PWA)
-   Caché v4: interfaz Apple Music unificada
+   Caché v5: Premium Glass Edition · pistas completas
    ======================================== */
 
-const CACHE_NAME = 'sonicyt-v4';
-const CACHE_ANTERIOR = 'sonicyt-v3';
-const CACHE_MIUSICA = 'mimusica-v1';
+const CACHE_NAME = 'sonicyt-v5';
+const CACHE_ANTERIOR = 'sonicyt-v4';
 
 const STATIC_ASSETS = [
   './',
@@ -26,8 +25,6 @@ self.addEventListener('install', (event) => {
 self.addEventListener('activate', (event) => {
   event.waitUntil(
     caches.delete(CACHE_ANTERIOR).then(() => {
-      return caches.delete(CACHE_MIUSICA);
-    }).then(() => {
       return caches.keys().then((keys) => {
         return Promise.all(
           keys.filter((key) => key !== CACHE_NAME)
@@ -44,6 +41,7 @@ self.addEventListener('fetch', (event) => {
   const { request } = event;
   const url = new URL(request.url);
 
+  // Archivos estáticos del mismo origen: cache-first
   if (url.origin === location.origin) {
     event.respondWith(
       caches.match(request).then((cached) => {
@@ -58,6 +56,7 @@ self.addEventListener('fetch', (event) => {
       })
     );
   } else {
+    // APIs externas (Internet Archive, iTunes, audio): siempre red, sin caché
     event.respondWith(fetch(request));
   }
 });

@@ -1,10 +1,10 @@
 /* ========================================
    Sonicyt — Service Worker (PWA)
-   Caché v5: Premium Glass Edition · pistas completas
+   Caché v6: motor visual iTunes + fusión de audio completa
    ======================================== */
 
-const CACHE_NAME = 'sonicyt-v5';
-const CACHE_ANTERIOR = 'sonicyt-v4';
+const CACHE_NAME = 'sonicyt-v6';
+const CACHE_ANTERIOR = 'sonicyt-v5';
 
 const STATIC_ASSETS = [
   './',
@@ -41,7 +41,6 @@ self.addEventListener('fetch', (event) => {
   const { request } = event;
   const url = new URL(request.url);
 
-  // Archivos estáticos del mismo origen: cache-first
   if (url.origin === location.origin) {
     event.respondWith(
       caches.match(request).then((cached) => {
@@ -56,7 +55,6 @@ self.addEventListener('fetch', (event) => {
       })
     );
   } else {
-    // APIs externas (Internet Archive, iTunes, audio): siempre red, sin caché
     event.respondWith(fetch(request));
   }
 });

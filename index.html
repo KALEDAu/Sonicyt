@@ -7,7 +7,7 @@
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="apple-mobile-web-app-title" content="Sonicyt">
-  <meta name="description" content="Reproductor de música completa PWA estilo Apple Music">
+  <meta name="description" content="Reproductor de música PWA estilo Apple Music">
   <title>Sonicyt</title>
   <link rel="manifest" href="manifest.json">
   <link rel="icon" type="image/png" sizes="192x192" href="icon-192.png">
@@ -33,7 +33,7 @@
 
       <!-- ===== VISTA EXPLORAR ===== -->
       <section class="view" id="view-explorar" style="display:none;">
-        <h2 class="section-title">Catálogos · Pistas completas</h2>
+        <h2 class="section-title">Catálogos</h2>
         <div class="chips" id="chips"></div>
         <div class="grid" id="exploreGrid"></div>
         <p class="estado" id="exploreMsg"></p>
@@ -87,11 +87,11 @@
     <div class="np-times"><span id="npTimeCur">0:00</span><span id="npTimeDur">0:00</span></div>
     <div class="np-controls">
       <button id="btnNpPrev" type="button" class="np-side" aria-label="10s atrás">
-        <svg viewBox="0 0 24 24" fill="currentColor" width="26" height="26"><path d="M3.5 12l9-6v12l-9-6zm9 0l9-6v12l-9-6z"/></svg>
+        <svg viewBox="0 0 24 24" fill="currentColor" width="24" height="24"><path d="M3.5 12l9-6v12l-9-6zm9 0l9-6v12l-9-6z"/></svg>
       </button>
       <button id="btnNpPlay" type="button" class="np-play" aria-label="Reproducir/Pausar"></button>
       <button id="btnNpNext" type="button" class="np-side" aria-label="10s adelante">
-        <svg viewBox="0 0 24 24" fill="currentColor" width="26" height="26"><path d="M20.5 12l-9 6V6l9 6zm-9 0l-9 6V6l9 6z"/></svg>
+        <svg viewBox="0 0 24 24" fill="currentColor" width="24" height="24"><path d="M20.5 12l-9 6V6l9 6zm-9 0l-9 6V6l9 6z"/></svg>
       </button>
     </div>
     <div class="np-vol">
@@ -100,8 +100,8 @@
       <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M3 10v4h4l5 5V5L7 10H3zm13.5 2A4.5 4.5 0 0 0 14 8v8a4.5 4.5 0 0 0 2.5-4zM14 3.23v2.06a7 7 0 0 1 0 13.42v2.06a9 9 0 0 0 0-17.54z"/></svg>
     </div>
     <button id="btnNpDownload" type="button" class="np-download">
-      <svg viewBox="0 0 24 24" fill="currentColor" width="17" height="17"><path d="M5 20h14v-2H5v2zM12 3l-6 7h4v6h4v-6h4l-6-7z"/></svg>
-      Descargar audio completo
+      <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M5 20h14v-2H5v2zM12 3l-6 7h4v6h4v-6h4l-6-7z"/></svg>
+      <span id="btnNpDownloadText">Descargar audio</span>
     </button>
     <p class="np-dl-status" id="npDownloadStatus"></p>
   </div>
@@ -112,10 +112,10 @@
       <svg viewBox="0 0 24 24" fill="currentColor" width="18" height="18"><path d="M19 6.4L17.6 5 12 10.6 6.4 5 5 6.4 10.6 12 5 17.6 6.4 19 12 13.4 17.6 19 19 17.6 13.4 12z"/></svg>
     </button>
     <h3>Configuración</h3>
-    <p class="cfg-label">Calidad de streaming y descarga</p>
+    <p class="cfg-label">Calidad de imágenes y streaming</p>
     <button id="q128" type="button" class="cfg-opt">Estándar (128 kbps)</button>
     <button id="q256" type="button" class="cfg-opt">Alta Calidad (256 kbps)</button>
-    <p class="cfg-note">128 optimiza archivos archivados por bitrate en la búsqueda; 256 prioriza calidad y portadas grandes (600 px).</p>
+    <p class="cfg-note">128: portadas 300 px y preloads ligeros. 256: portadas 600 px, precarga máxima y prioriza el audio completo si está disponible.</p>
   </div>
 
   <!-- ===== BARRA DE PESTAÑAS ===== -->
@@ -128,27 +128,25 @@
 
   <script>
 /* ============================================================
-   Sonicyt — App unificada (Vanilla JS) · Edición Premium v5
-   Fuente primaria: Internet Archive (pistas COMPLETAS .mp3, CORS abierto)
-   Fuente de respaldo: iTunes Search API (previews de 30 s, marcados)
+   Sonicyt — Hybrid Engine v6
+   Motor VISUAL: iTunes Search API (portadas reales 600px)
+   Audio COMPLETO: fusión invisible en segundo plano vía
+   Invidious (sin cookies) con ventana de 3 segundos.
+   Si la fusión no responde, suena el preview de 30 s de
+   iTunes automáticamente: nunca se corta ni muestra errores.
    ============================================================ */
 
-// ---------- Configuración de APIs ----------
-const IA_SEARCH = 'https://archive.org/advancedsearch.php?q=';
-const IA_META = 'https://archive.org/metadata/';
-const IA_DOWNLOAD = 'https://archive.org/download/';
-const IA_IMG = 'https://archive.org/services/img/';
 const ITUNES_API = 'https://itunes.apple.com/search?media=music&entity=song&limit=20&term=';
 const INVIDIOUS_INSTANCES = ['https://tux.digital', 'https://projectsegfau.lt', 'https://yewtu.be'];
+const TIEMPO_FUSION_MS = 3000;
+const CATALOGO_INICIO = ['Pop', 'Electronic', 'Lofi'];
+const GENEROS = ['Pop', 'Rock', 'Electronic', 'Lofi', 'Jazz', 'Hip-Hop', 'Reggaetón', 'Salsa', 'Metal', 'K-Pop', 'Clásica', 'Bossanova'];
 
-const GENEROS = ['Piano', 'Guitar', 'Jazz', 'Blues', 'Folk', 'Classical', 'Rock', 'Electronic', 'Ambient', 'Symphony', 'Opera', 'Country'];
-const CATALOGO_INICIO = { ahora: 'Piano', album1: 'Guitar', album2: 'Jazz' };
-
-// ---------- Elementos DOM ----------
+// ---------- Modelo DOM ----------
 let searchInput, searchBtn, resultsEl;
 let audio, playerBar, playerThumb, playerTitle, playerArtist, btnPlayPause;
 let nowPlaying, npBackdrop, npArt, npTitle, npArtist, npBadge, npProgress, npTimeCur, npTimeDur;
-let btnNpPrev, btnNpPlay, btnNpNext, btnNpDownload, npDownloadStatus, npVol, btnNpClose;
+let btnNpPrev, btnNpPlay, btnNpNext, btnNpDownload, btnNpDownloadText, npDownloadStatus, npVol, btnNpClose;
 let btnConfig, configPanel, btnCloseConfig, q128Btn, q256Btn;
 let tabBar, carouselNow, gridAlbums, chipsEl, exploreGrid, exploreMsg, biblioGrid, biblioMsg, btnClearHistory;
 
@@ -156,59 +154,61 @@ let currentSong = null;
 let quality = localStorage.getItem('sonicyt-quality') || '256';
 let inicioCargado = false;
 let generoActivo = null;
+let fusionController = null;
 
 const SVG_PLAY = '<svg viewBox="0 0 24 24" fill="currentColor" width="26" height="26"><path d="M8 5v14l11-7z"/></svg>';
 const SVG_PAUSE = '<svg viewBox="0 0 24 24" fill="currentColor" width="26" height="26"><path d="M6 5h4v14H6zM14 5h4v14h-4z"/></svg>';
+const SVG_DL_FULL = '<svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M5 20h14v-2H5v2zM12 3l-6 7h4v6h4v-6h4l-6-7z"/></svg>';
 
-function $(id) { return document.getElementById(id); }
+function $id(id) { return document.getElementById(id); }
 
 function obtenerElementos() {
-  searchInput = $('search');
-  searchBtn = $('search-btn');
-  resultsEl = $('results');
+  searchInput = $id('search');
+  searchBtn = $id('search-btn');
+  resultsEl = $id('results');
 
   audio = new Audio();
   audio.preload = 'auto';
-  audio.crossOrigin = 'anonymous';
 
-  playerBar = $('playerBar');
-  playerThumb = $('playerThumb');
-  playerTitle = $('playerTitle');
-  playerArtist = $('playerArtist');
-  btnPlayPause = $('btnPlayPause');
+  playerBar = $id('playerBar');
+  playerThumb = $id('playerThumb');
+  playerTitle = $id('playerTitle');
+  playerArtist = $id('playerArtist');
+  btnPlayPause = $id('btnPlayPause');
 
-  nowPlaying = $('nowPlaying');
-  npBackdrop = $('npBackdrop');
-  npArt = $('npArt');
-  npTitle = $('npTitle');
-  npArtist = $('npArtist');
-  npBadge = $('npBadge');
-  npProgress = $('npProgress');
-  npTimeCur = $('npTimeCur');
-  npTimeDur = $('npTimeDur');
-  btnNpPrev = $('btnNpPrev');
-  btnNpPlay = $('btnNpPlay');
-  btnNpNext = $('btnNpNext');
-  btnNpDownload = $('btnNpDownload');
-  npDownloadStatus = $('npDownloadStatus');
-  npVol = $('npVol');
-  btnNpClose = $('btnNpClose');
+  nowPlaying = $id('nowPlaying');
+  npBackdrop = $id('npBackdrop');
+  npArt = $id('npArt');
+  npTitle = $id('npTitle');
+  npArtist = $id('npArtist');
+  npBadge = $id('npBadge');
+  npProgress = $id('npProgress');
+  npTimeCur = $id('npTimeCur');
+  npTimeDur = $id('npTimeDur');
+  btnNpPrev = $id('btnNpPrev');
+  btnNpPlay = $id('btnNpPlay');
+  btnNpNext = $id('btnNpNext');
+  btnNpDownload = $id('btnNpDownload');
+  btnNpDownloadText = $id('btnNpDownloadText');
+  npDownloadStatus = $id('npDownloadStatus');
+  npVol = $id('npVol');
+  btnNpClose = $id('btnNpClose');
 
-  btnConfig = $('btnConfig');
-  configPanel = $('configPanel');
-  btnCloseConfig = $('btnCloseConfig');
-  q128Btn = $('q128');
-  q256Btn = $('q256');
+  btnConfig = $id('btnConfig');
+  configPanel = $id('configPanel');
+  btnCloseConfig = $id('btnCloseConfig');
+  q128Btn = $id('q128');
+  q256Btn = $id('q256');
 
-  tabBar = $('tabBar');
-  carouselNow = $('carouselNow');
-  gridAlbums = $('gridAlbums');
-  chipsEl = $('chips');
-  exploreGrid = $('exploreGrid');
-  exploreMsg = $('exploreMsg');
-  biblioGrid = $('biblioGrid');
-  biblioMsg = $('biblioMsg');
-  btnClearHistory = $('btnClearHistory');
+  tabBar = $id('tabBar');
+  carouselNow = $id('carouselNow');
+  gridAlbums = $id('gridAlbums');
+  chipsEl = $id('chips');
+  exploreGrid = $id('exploreGrid');
+  exploreMsg = $id('exploreMsg');
+  biblioGrid = $id('biblioGrid');
+  biblioMsg = $id('biblioMsg');
+  btnClearHistory = $id('btnClearHistory');
 }
 
 // ---------- Utilidades ----------
@@ -231,9 +231,9 @@ function setEstado(el, mensaje, esError) {
   el.innerHTML = '';
   const p = document.createElement('p');
   p.style.textAlign = 'center';
-  p.style.marginTop = '40px';
+  p.style.marginTop = '36px';
   p.style.fontSize = '15px';
-  p.style.color = esError ? '#ff6b6b' : 'rgba(255,255,255,0.6)';
+  p.style.color = esError ? '#ff6b6b' : 'rgba(255,255,255,0.62)';
   p.textContent = mensaje;
   el.appendChild(p);
 }
@@ -246,10 +246,27 @@ function sanearNombre(texto) {
   return (texto || 'Audio').replace(/[\\/:*?"<>|]/g, '').slice(0, 100);
 }
 
+function artworkSize() {
+  return quality === '256' ? '600x600' : '300x300';
+}
+
+function actualizacionBadge() {
+  if (!currentSong) return;
+  if (currentSong.completa) {
+    npBadge.textContent = '● PISTA COMPLETA · MP3';
+    npBadge.style.display = 'block';
+    btnNpDownloadText.textContent = 'Descargar audio completo';
+  } else {
+    npBadge.textContent = '● PREVIEW · 30 s';
+    npBadge.style.display = 'block';
+    btnNpDownloadText.textContent = 'Descargar preview';
+  }
+}
+
 // ---------- Historial (localStorage) ----------
 function cargarHistorial() {
   try {
-    return JSON.parse(localStorage.getItem('sonicyt-historial-v5') || '[]');
+    return JSON.parse(localStorage.getItem('sonicyt-historial-v6') || '[]');
   } catch (e) {
     return [];
   }
@@ -259,152 +276,149 @@ function agregarAHistorial(song) {
   let hist = cargarHistorial().filter(function (t) { return t.id !== song.id; });
   hist.unshift(song);
   hist = hist.slice(0, 50);
-  localStorage.setItem('sonicyt-historial-v5', JSON.stringify(hist));
+  localStorage.setItem('sonicyt-historial-v6', JSON.stringify(hist));
 }
 
-// ---------- Búsqueda en Internet Archive (pistas completas) ----------
-function buscarIA(q) {
-  const queryIA = '(title:("' + encodeURIComponent(q) + '") OR creator:("' + encodeURIComponent(q) + '")) AND mediatype:audio';
-  return fetch(IA_SEARCH + queryIA + '&rows=24&output=json', { mode: 'cors' }).then(function (res) {
-    if (!res.ok) throw new Error('HTTP ' + res.status + ' en Internet Archive');
-    return res.json();
-  }).then(function (data) {
-    const docs = (data.response && data.response.docs) ? data.response.docs : [];
-    return docs.map(function (d) {
-      return {
-        id: d.identifier,
-        identificadorIA: d.identifier,
-        name: (d.title || d.identifier).replace(/^_|_$/g, '').replace(/_/g, ' '),
-        artist_name: d.creator || 'Archivo de dominio público',
-        image: IA_IMG + d.identifier,
-        completa: true
-      };
-    });
-  });
+// ---------- Mapeo iTunes → modelo visual ----------
+function mapeariTunes(t) {
+  const img = t.artworkUrl100 ? t.artworkUrl100.replace('100x100bb', artworkSize() + 'bb') : '';
+  return {
+    id: 'it-' + t.trackId,
+    name: t.trackName,
+    artist_name: t.artistName,
+    image: img,
+    audio: t.previewUrl,
+    completa: false
+  };
 }
 
-function buscariTunes(q) {
-  return fetch(ITUNES_API + encodeURIComponent(q) + '&limit=20', { mode: 'cors' }).then(function (res) {
-    if (!res.ok) throw new Error('HTTP ' + res.status + ' en iTunes');
-    return res.json();
-  }).then(function (data) {
-    return (data.results || []).map(function (t) {
-      const img = t.artworkUrl100 ? t.artworkUrl100.replace('100x100bb', artworkSize() + 'bb') : '';
-      return {
-        id: 'it-' + t.trackId,
-        name: t.trackName,
-        artist_name: t.artistName,
-        image: img,
-        audio: t.previewUrl,
-        completa: false
-      };
-    });
-  });
+// ---------- Fetch de catálogos iTunes (visual, instantáneo) ----------
+async function fetchItunes(term, limite) {
+  const limiteEfactivo = limite || 12;
+  const res = await fetch(ITUNES_API + encodeURIComponent(term) + '&limit=' + limiteEfactivo, { mode: 'cors' });
+  if (!res.ok) throw new Error('HTTP ' + res.status + ' en iTunes: ' + term);
+  const data = await res.json();
+  return (data.results || []).map(mapeariTunes);
 }
 
-// ---------- Resolver stream de Internet Archive (archivo .mp3 completo) ----------
-function resolverStreamIA(item) {
-  if (item.audio) return Promise.resolve(item.audio); // URL de historial directa
-  return fetch(IA_META + item.identificadorIA + '?output=json', { mode: 'cors' })
-    .then(function (res) { if (!res.ok) throw new Error('HTTP ' + res.status + ' en metadata'); return res.json(); })
-    .then(function (meta) {
-      const files = meta.files || [];
-      const mp3s = files.filter(function (f) {
-        const n = (f.name || '').toLowerCase();
-        const fmt = (f.format || '').toLowerCase();
-        const esMp3 = (n.indexOf('.mp3', n.length - 4) !== -1) || (fmt.indexOf('mp3') !== -1);
-        return esMp3;
-      });
-      let elegido = null;
-      // Priorizar bitrate según configuración de calidad
-      const prefer = (quality === '256') ? ['256k', '192k', '160k', '128k', '64k'] : ['128k', '64k', '192k'];
-      if (mp3s.length > 0) {
-        for (let p = 0; p < prefer.length && !elegido; p++) {
-          elegido = mp3s.find(function (f) {
-            const fmt = (f.format || f.name || '').toLowerCase();
-            return fmt.indexOf(prefer[p]) !== -1 || fmt.indexOf('mp3') !== -1;
-          });
-        }
-        if (!elegido) elegido = mp3s[0];
-      }
-      if (!elegido) throw new Error('Sin archivos .mp3 en el ítem');
-      return IA_DOWNLOAD + item.identificadorIA + '/' + encodeURIComponent(elegido.name);
-    });
-}
-
-// ---------- Reproductor ----------
-async function cargarCancion(item) {
-  let title = item.name || item.title || 'Sin título';
-  let artist = item.artist_name || item.author || 'Artista desconocido';
-  let art = item.image || '';
-  let streamUrl = null;
-  let completa = !!item.completa;
-
-  // Ruta 1: Internet Archive → pista COMPLETA .mp3
-  if (item.identificadorIA) {
-    try {
-      streamUrl = await resolverStreamIA(item);
-      completa = true;
-    } catch (err) {
-      console.warn('IA falló:', err.message);
-      setEstado(resultsEl, 'No se pudo resolver la pista completa: ' + err.message, true);
-      return;
-    }
+// ---------- FUSIÓN INVISIBLE: audio completo vía Invidious (sin cookies) ----------
+function cancelarFusion() {
+  if (fusionController) {
+    fusionController.abort();
+    fusionController = null;
   }
+}
 
-  // Ruta 2: iTunes / historial con audio directo
-  if (!streamUrl && item.audio) {
-    streamUrl = item.audio;
-    completa = false;
-  }
+async function fusionCancionCompleta(artistName, songName) {
+  cancelarFusion();
+  const controller = new AbortController();
+  fusionController = controller;
+  const timer = setTimeout(function () { controller.abort(); }, TIEMPO_FUSION_MS);
 
-  // Ruta 3: Invidious (videoId) → itag=140
-  if (!streamUrl && item.videoId) {
-    setEstado(resultsEl, 'Cargando canción…', false);
+  try {
+    // Paso 1: buscar el videoId en Invidious usando artista + título
+    let videoId = null;
     for (let i = 0; i < INVIDIOUS_INSTANCES.length; i++) {
+      const instancia = INVIDIOUS_INSTANCES[i];
       try {
-        const instancia = INVIDIOUS_INSTANCES[i];
-        const res = await fetch(instancia + '/api/v1/videos/' + item.videoId, { mode: 'cors' });
-        if (!res.ok) throw new Error('HTTP ' + res.status);
+        const res = await fetch(instancia + '/api/v1/search?q=' + encodeURIComponent(artistName + ' ' + songName) + '&type=video', {
+          mode: 'cors', signal: controller.signal
+        });
+        if (!res.ok) continue;
+        const data = await res.json();
+        if (data && data.length > 0) { videoId = data[0].videoId; break; }
+      } catch (e) {
+        if (e.name === 'AbortError') throw e;
+        continue;
+      }
+    }
+    if (!videoId) throw new Error('Invidious sin resultados');
+
+    // Paso 2: extraer el stream itag=140 del video
+    for (let i = 0; i < INVIDIOUS_INSTANCES.length; i++) {
+      const instancia = INVIDIOUS_INSTANCES[i];
+      try {
+        const res = await fetch(instancia + '/api/v1/videos/' + videoId, {
+          mode: 'cors', signal: controller.signal
+        });
+        if (!res.ok) continue;
         const vid = await res.json();
         const formats = vid.adaptiveFormats || [];
         const f = formats.find(function (x) {
           return x.itag === 140 || (x.contentType && x.contentType.startsWith('audio/'));
         });
         if (f && f.url) {
-          streamUrl = f.url;
-          title = vid.title || title;
-          artist = vid.author || artist;
-          art = vid.thumbnails && vid.thumbnails[0] ? vid.thumbnails[0].url : art;
-          break;
+          return f.url;
         }
-      } catch (err) {
-        console.warn('Invidious falló:', instancia, err.message);
+      } catch (e) {
+        if (e.name === 'AbortError') throw e;
+        continue;
       }
     }
+    throw new Error('Sin itag=140');
+  } catch (err) {
+    throw err;
+  } finally {
+    clearTimeout(timer);
+    fusionController = null;
   }
+}
 
-  if (!streamUrl) {
-    setEstado(resultsEl, 'Error: no se encontró stream de audio para esta canción.', true);
-    return;
-  }
+// ---------- Cambio de stream sin cortes (swap continuo) ----------
+function cambiarStreamSinCortes(urlCompleto) {
+  const posicion = audio.currentTime || 0;
+  const estabaSonando = !audio.paused;
+  audio.src = urlCompleto;
+  audio.addEventListener('loadedmetadata', function alFetch() {
+    try { audio.currentTime = posicion; } catch (e) { /* algunos navegadores */ }
+    audio.removeEventListener('loadedmetadata', alFetch);
+  });
+  if (estabaSonando) audio.play().catch(function () {});
+  currentSong.url = urlCompleto;
+  currentSong.completa = true;
+  actualizacionBadge();
+  agregarAHistorial(currentSong);
+  npDownloadStatus.textContent = 'Audio completo cargado sin cortes ✔';
+}
 
+// ---------- Reproductor ----------
+function reproducirPreview(item) {
   currentSong = {
-    id: item.id,
-    title: title,
-    artist: artist,
-    thumb: art,
-    url: streamUrl,
-    completa: completa,
-    identificadorIA: item.identificadorIA || null
+    id: item.id || 'it-' + Math.floor(Math.random() * 1e10),
+    title: item.name || item.title || 'Sin título',
+    artist: item.artist_name || item.author || 'Artista desconocido',
+    thumb: item.image || '',
+    url: item.audio || item.url || null,
+    // Historial sin campo audio: la URL guardada ya es la pista resuelta (completa o preview)
+    completa: !item.audio && item.completa === true
   };
-
   audio.src = currentSong.url;
-  await audio.play().catch(function () { /* autoplay bloqueado */ });
-
+  audio.play().catch(function () { /* autoplay bloqueado */ });
   actualizarReproductorMini();
   abrirNowPlaying();
   agregarAHistorial(currentSong);
+}
+
+async function cargarCancion(item) {
+  if (!item || !(item.audio || item.videoId || item.url)) {
+    setEstado(resultsEl, 'Esta tarjeta no tiene audio reproducible.', false);
+    return;
+  }
+
+  cancelarFusion();
+
+  // 1) SONAR AL INSTANTE con el preview de iTunes (nunca bloquear el usuario)
+  reproducirPreview(item);
+
+  // 2) FUSIÓN INVISIBLE: intentar el MP3 completo en segundo plano (ventana de 3 s)
+  const artist = item.artist_name || item.author || '';
+  const song = item.name || item.title || '';
+  fusionCancionCompleta(artist, song).then(function (urlCompleto) {
+    // Llegó antes de los 3 s → swap continuo a la pista completa
+    if (currentSong) cambiarStreamSinCortes(urlCompleto);
+  }).catch(function () {
+    // No respondió a tiempo o Invidious caído: el preview sigue sonando, sin errores
+  });
 }
 
 function actualizarReproductorMini() {
@@ -413,8 +427,13 @@ function actualizarReproductorMini() {
   playerThumb.src = currentSong.thumb;
   playerTitle.textContent = currentSong.title;
   playerArtist.textContent = currentSong.artist;
-  iconName(btnPlayPause, audio.paused ? 'play' : 'pause');
-  iconName(btnNpPlay, audio.paused ? 'play' : 'pause');
+  refreshPlayIcons();
+}
+
+function refreshPlayIcons() {
+  const ico = audio.paused ? 'play' : 'pause';
+  iconName(btnPlayPause, ico);
+  iconName(btnNpPlay, ico);
 }
 
 function abrirNowPlaying() {
@@ -423,44 +442,37 @@ function abrirNowPlaying() {
   npArt.src = currentSong.thumb;
   npTitle.textContent = currentSong.title;
   npArtist.textContent = currentSong.artist;
-  if (currentSong.completa) {
-    npBadge.textContent = '● PISTA COMPLETA · MP3';
-    npBadge.style.display = 'block';
-    btnNpDownload.innerHTML = '<svg viewBox="0 0 24 24" fill="currentColor" width="17" height="17"><path d="M5 20h14v-2H5v2zM12 3l-6 7h4v6h4v-6h4l-6-7z"/></svg> Descargar audio completo';
-  } else {
-    npBadge.textContent = '● PREVIEW · 30 s (iTunes)';
-    npBadge.style.display = 'block';
-    btnNpDownload.innerHTML = '<svg viewBox="0 0 24 24" fill="currentColor" width="17" height="17"><path d="M5 20h14v-2H5v2zM12 3l-6 7h4v6h4v-6h4l-6-7z"/></svg> Descargar preview';
-  }
   nowPlaying.style.display = 'flex';
   npDownloadStatus.textContent = '';
+  actualizacionBadge();
+  refreshPlayIcons();
 }
 
 function cerrarNowPlaying() {
   nowPlaying.style.display = 'none';
 }
 
-// ---------- Descarga nativa del archivo completo ----------
+// ---------- Descarga nativa ----------
 async function descargarCancion() {
   if (!currentSong || !currentSong.url) return;
-  npDownloadStatus.textContent = 'Descargando pista completa…';
+  npDownloadStatus.textContent = 'Descargando…';
   try {
     const res = await fetch(currentSong.url);
     if (!res.ok) throw new Error('HTTP ' + res.status);
     const blob = await res.blob();
-    const ext = currentSong.completa ? 'mp3' : ((blob.type && blob.type.includes('mpeg')) ? 'mp3' : 'm4a');
-    const nombre = currentSong.artist + ' - ' + currentSong.title;
+    const ext = (currentSong.completa) ? 'mp3' : ((blob.type && blob.type.indexOf('mpeg') !== -1) ? 'mp3' : 'm4a');
+    const nombre = sanearNombre(currentSong.artist + ' - ' + currentSong.title) + '.' + ext;
     const urlBlob = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = urlBlob;
-    a.download = sanearNombre(nombre) + '.' + ext;
+    a.download = nombre;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
     setTimeout(function () { URL.revokeObjectURL(urlBlob); }, 4000);
-    npDownloadStatus.textContent = 'Archivo completo guardado en tu carpeta de Descargas ✔ (' + Math.round(blob.size / 1024) + ' KB)';
+    npDownloadStatus.textContent = 'Guardado en tu carpeta de Descargas ✔ (' + Math.round(blob.size / 1024) + ' KB)';
   } catch (err) {
-    npDownloadStatus.textContent = 'Abriendo descarga nativa…';
+    npDownloadStatus.textContent = 'Descarga nativa abierta…';
     const a2 = document.createElement('a');
     a2.href = currentSong.url;
     a2.target = '_blank';
@@ -471,9 +483,11 @@ async function descargarCancion() {
   }
 }
 
-// ---------- Render de tarjetas ----------
+// ---------- Render visual ----------
 function crearCard(item, tipo) {
-  const thumbUrl = item.image || IA_IMG + (item.identificadorIA || '');
+  const thumbUrl = item.image || ('data:image/svg+xml;utf8,' + encodeURIComponent(
+    '<svg xmlns="http://www.w3.org/2000/svg" width="300" height="300"><rect width="300" height="300" fill="#161622"/><text x="150" y="178" font-size="72" text-anchor="middle" fill="#1DB954" font-family="sans-serif">&#9834;</text></svg>'
+  ));
   const titulo = item.name || item.title || 'Sin título';
   const artista = item.artist_name || item.author || 'Artista desconocido';
 
@@ -481,8 +495,7 @@ function crearCard(item, tipo) {
   card.className = 'card';
   card.innerHTML =
     '<div class="card-art"><img loading="lazy" src="' + escapeHtml(thumbUrl) + '" alt=""></div>' +
-    (tipo === 'carousel' ? '' : '<div class="card-title">' + escapeHtml(titulo) + '</div><div class="card-artist">' + escapeHtml(artista) + '</div>') +
-    '';
+    (tipo === 'list' ? '' : '<div class="card-title">' + escapeHtml(titulo) + '</div><div class="card-artist">' + escapeHtml(artista) + '</div>');
   card.title = titulo + ' · ' + artista;
   card.onclick = function () { cargarCancion(item); };
   return card;
@@ -493,12 +506,11 @@ function renderLista(items, contenedor) {
   items.forEach(function (it) {
     const row = document.createElement('div');
     row.className = 'row-card';
-    const thumbUrl = it.image || '';
     row.innerHTML =
-      '<img class="row-art" loading="lazy" src="' + escapeHtml(thumbUrl) + '" alt="">' +
-      '<div class="row-info"><div class="row-title">' + escapeHtml(it.name || it.title || '') + '</div>' +
-      '<div class="row-artist-row">' + escapeHtml(it.artist_name || it.artist || '') + '</div>' +
-      (it.completa ? '<span class="tag-full">COMPLETA</span>' : '<span class="tag-preview">PREVIEW 30s</span>') +
+      '<img class="row-art" loading="lazy" src="' + escapeHtml(it.image || '') + '" alt="">' +
+      '<div class="row-info">' +
+      '<div class="row-title">' + escapeHtml(it.name || it.title || '') + '</div>' +
+      '<div class="row-artist">' + escapeHtml(it.artist_name || it.author || '') + '</div>' +
       '</div>';
     row.onclick = function () { cargarCancion(it); };
     contenedor.appendChild(row);
@@ -508,30 +520,27 @@ function renderLista(items, contenedor) {
 function renderizar(items) {
   if (!resultsEl) return;
   resultsEl.innerHTML = '';
-  items.forEach(function (it) {
-    resultsEl.appendChild(crearCard(it, 'result'));
-  });
-  // Toast informativo: fuente usada
-  const fuente = items[0] && items[0].completa ? 'Pistas completas (Internet Archive)' : 'Previews de 30 s (iTunes fallback)';
   const toast = document.createElement('p');
   toast.className = 'fuente-toast';
-  toast.textContent = '♪ ' + fuente;
-  resultsEl.insertBefore(toast, resultsEl.firstChild);
+  toast.textContent = '♪ Portadas y metadatos por iTunes · audio completo cuando esté disponible';
+  resultsEl.appendChild(toast);
+  items.forEach(function (it) {
+    resultsEl.appendChild(crearCard(it, 'list'));
+  });
 }
 
-// ---------- Inicio: catálogos automáticos con pistas completas ----------
+// ---------- Inicio: catálogos iTunes instantáneos ----------
 async function cargarInicio() {
-  setEstado(carouselNow, 'Cargando catálogos de pistas completas…', false);
+  setEstado(carouselNow, 'Cargando portadas…', false);
   try {
-    const ahora = await buscarIA(CATALOGO_INICIO.ahora);
-    const Fondos = await buscarIA(CATALOGO_INICIO.album1);
-    const tec = await buscarIA(CATALOGO_INICIO.album2);
+    const promises = CATALOGO_INICIO.map(function (t) { return fetchItunes(t); });
+    const [pop, electronic, lofi] = await Promise.all(promises);
     carouselNow.innerHTML = '';
-    ahora.forEach(function (it) { carouselNow.appendChild(crearCard(it, 'carousel')); });
+    pop.forEach(function (it) { carouselNow.appendChild(crearCard(it, 'carousel')); });
     gridAlbums.innerHTML = '';
-    Fondos.forEach(function (it) { gridAlbums.appendChild(crearCard(it, 'grid')); });
-    tec.forEach(function (it) { gridAlbums.appendChild(crearCard(it, 'grid')); });
-    if (ahora.length === 0) setEstado(carouselNow, 'Sin resultados ahora, intenta Explorar.', false);
+    electronic.forEach(function (it) { gridAlbums.appendChild(crearCard(it, 'grid')); });
+    lofi.forEach(function (it) { gridAlbums.appendChild(crearCard(it, 'grid')); });
+    if (pop.length === 0) setEstado(carouselNow, 'iTunes no respondió con resultados.', false);
     inicioCargado = true;
   } catch (err) {
     setEstado(carouselNow, 'Error cargando catálogos: ' + err.message, true);
@@ -544,9 +553,9 @@ function pintarChips() {
   GENEROS.forEach(function (g) {
     const chip = document.createElement('button');
     chip.type = 'button';
-    chip.className = 'chip' + (generoActivo === g.trim() ? ' chip-active' : '');
-    chip.textContent = g.trim();
-    chip.onclick = function () { explorarGenero(g.trim()); };
+    chip.className = 'chip' + (generoActivo === g ? ' chip-active' : '');
+    chip.textContent = g;
+    chip.onclick = function () { explorarGenero(g); };
     chipsEl.appendChild(chip);
   });
 }
@@ -554,14 +563,16 @@ function pintarChips() {
 async function explorarGenero(g) {
   generoActivo = g;
   pintarChips();
-  setEstado(exploreMsg, 'Cargando «' + g + '» — pistas completas…', false);
   exploreGrid.innerHTML = '';
+  setEstado(exploreMsg, 'Cargando «' + g + '»…', false);
   try {
-    const items = await buscarIA(g);
-    exploreGrid.innerHTML = '';
+    const items = await fetchItunes(g);
     exploreMsg.innerHTML = '';
+    if (items.length === 0) {
+      setEstado(exploreMsg, 'Sin resultados para «' + g + '».', false);
+      return;
+    }
     items.forEach(function (it) { exploreGrid.appendChild(crearCard(it, 'grid')); });
-    if (items.length === 0) setEstado(exploreMsg, 'Sin resultados para «' + g + '».', false);
   } catch (err) {
     setEstado(exploreMsg, 'Error: ' + err.message, true);
   }
@@ -582,7 +593,7 @@ function renderBiblio() {
 // ---------- Pestañas ----------
 function switchTab(tab) {
   ['inicio', 'explorar', 'biblio', 'buscar'].forEach(function (t) {
-    const v = $('view-' + t);
+    const v = $id('view-' + t);
     if (v) v.style.display = (t === tab) ? 'block' : 'none';
   });
   tabBar.querySelectorAll('.tab').forEach(function (b) {
@@ -596,19 +607,10 @@ function switchTab(tab) {
 // ---------- Búsqueda (pestaña Buscar) ----------
 async function buscar(q) {
   switchTab('buscar');
-  document.getElementById('results').innerHTML = '<p style="color: #1DB954; text-align: center; font-weight: bold;">[LOG] El botón reacciona. Buscando pista completa…</p>';
+  document.getElementById('results').innerHTML = '<p style="color: #1DB954; text-align: center; font-weight: bold;">[LOG] El botón reacciona. Buscando en iTunes…</p>';
 
-  // 1) Fuente primaria: Internet Archive — canciones completas
   try {
-    const items = await buscarIA(q);
-    if (items.length > 0) { renderizar(items); return; }
-  } catch (errIA) {
-    console.warn('IA falló:', errIA.message);
-  }
-
-  // 2) Fuente de respaldo: iTunes previews (marcados como 30 s)
-  try {
-    const items = await buscariTunes(q);
+    const items = await fetchItunes(q, 20);
     if (items.length === 0) {
       setEstado(resultsEl, 'No se encontraron canciones para «' + q + '»', false);
       return;
@@ -621,14 +623,9 @@ async function buscar(q) {
 }
 
 // ---------- Configuración ----------
-function abrirConfig() {
-  aplicarCalidadUI();
-  configPanel.style.display = 'flex';
-}
+function abrirConfig() { aplicarCalidadUI(); configPanel.style.display = 'flex'; }
 
-function cerrarConfig() {
-  configPanel.style.display = 'none';
-}
+function cerrarConfig() { configPanel.style.display = 'none'; }
 
 function aplicarCalidadUI() {
   q128Btn.classList.toggle('opt-active', quality === '128');
@@ -649,13 +646,14 @@ function initControles() {
     if (b) switchTab(b.dataset.tab);
   });
 
-  btnPlayPause.onclick = function (e) {
+  btnPlayPause.addEventListener('click', function (e) {
     e.stopPropagation();
     if (!currentSong) return;
     if (audio.paused) { audio.play().catch(function () {}); } else { audio.pause(); }
-  };
+  });
+
   playerBar.addEventListener('click', function (e) {
-    if (e.target === btnPlayPause) return;
+    if (e.target === btnPlayPause || btnPlayPause.contains(e.target)) return;
     abrirNowPlaying();
   });
 
@@ -673,14 +671,8 @@ function initControles() {
   btnNpDownload.onclick = descargarCancion;
   npVol.oninput = function () { audio.volume = npVol.value / 100; };
 
-  audio.addEventListener('play', function () {
-    iconName(btnPlayPause, 'pause');
-    iconName(btnNpPlay, 'pause');
-  });
-  audio.addEventListener('pause', function () {
-    iconName(btnPlayPause, 'play');
-    iconName(btnNpPlay, 'play');
-  });
+  audio.addEventListener('play', refreshPlayIcons);
+  audio.addEventListener('pause', refreshPlayIcons);
   audio.addEventListener('timeupdate', function () {
     if (audio.duration) {
       npProgress.max = audio.duration;
@@ -699,7 +691,7 @@ function initControles() {
   q256Btn.onclick = function () { setQuality('256'); };
 
   btnClearHistory.onclick = function () {
-    localStorage.removeItem('sonicyt-historial-v5');
+    localStorage.removeItem('sonicyt-historial-v6');
     renderBiblio();
   };
 
@@ -730,8 +722,7 @@ document.addEventListener('DOMContentLoaded', function () {
   initControles();
   initSW();
   aplicarCalidadUI();
-  iconName(btnPlayPause, 'play');
-  iconName(btnNpPlay, 'play');
+  refreshPlayIcons();
   switchTab('inicio');
 });
   </script>

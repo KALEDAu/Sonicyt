@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <meta name="theme-color" content="#0b0b0b">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Mi Música">
+  <meta name="description" content="Reproductor de música PWA con Invidious y Capacitor">
+  <title>Sonicyt — Reproductor PWA</title>
+  <link rel="manifest" href="manifest.json">
+  <link rel="icon" type="image/png" sizes="192x192" href="icon-192.png">
+  <link rel="icon" type="image/png" sizes="512x512" href="icon-512.png">
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <div class="app">
+    <header class="header">
+      <h1 class="app-title">Sonicyt</h1>
+      <div class="search-wrapper">
+        <input type="search" id="searchInput" placeholder="Buscar canciones o artistas…" autocomplete="off" spellcheck="false" autocapitalize="none">
+        <button id="searchBtn" type="button">Buscar</button>
+      </div>
+    </header>
+
+    <main class="results" id="results" role="list">
+      <div class="empty" id="emptyState" style="display:none;">Busca una canción o artista para empezar</div>
+    </main>
+  </div>
+
+  <div class="player-bar" id="playerBar" style="display:none;" aria-label="Reproductor">
+    <div class="player-thumb">
+      <img id="playerThumb" src="" alt="Portada">
+    </div>
+    <div class="player-info">
+      <div id="playerTitle" class="player-title">Canción</div>
+      <div id="playerArtist" class="player-artist">Artista</div>
+    </div>
+    <button id="btnPlayPause" type="button" class="btn-play-pause" aria-label="Reproducir/Pausar">▶</button>
+    <div class="progress-container">
+      <input type="range" id="progressBar" min="0" max="100" value="0" list="tickmarks">
+      <datalist id="tickmarks"></datalist>
+      <div class="time-labels">
+        <span id="timeCurrent">0:00</span>
+        <span id="timeDuration">0:00</span>
+      </div>
+    </div>
+  </div>
+
+  <script src="js/app.js"></script>
+</body>
+</html>

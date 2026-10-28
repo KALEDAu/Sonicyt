@@ -1,0 +1,25 @@
+{
+  "appId": "com.kaledau.sonicyt",
+  "appName": "Sonicyt",
+  "webDir": ".",
+  "bundledWebRuntime": false,
+  "server": {
+    "androidScheme": "https",
+    "cleartext": false,
+    "allowNavigation": [
+      "invidious.nerdvpn.de",
+      "*.googlevideo.com"
+    ]
+  },
+  "plugins": {
+    "SplashScreen": {
+      "launchShowDuration": 1500,
+      "backgroundColor": "#0b0b0b",
+      "showCancel": false
+    },
+    "StatusBar": {
+      "style": "DARK",
+      "backgroundColor": "#0b0b0b"
+    }
+  }
+}

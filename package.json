@@ -1,0 +1,13 @@
+{
+  "name": "mimusica-pwa",
+  "version": "1.0.0",
+  "description": "Reproductor de música PWA con Invidious y Capacitor para Android",
+  "main": "index.html",
+  "scripts": {
+    "build": "mkdir -p dist && cp -r index.html css js manifest.json sw.js dist/"
+  },
+  "keywords": ["pwa", "music", "invidious", "capacitor", "vanilla-js"],
+  "author": "Mi Música",
+  "license": "MIT",
+  "devDependencies": {}
+}

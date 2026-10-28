@@ -1,15 +1,17 @@
 /* ========================================
    Sonicyt — Service Worker (PWA)
-   Caché v6: motor visual iTunes + fusión de audio completa
+   Caché v7 modular: cascarón + conectores en extensions/
    ======================================== */
 
-const CACHE_NAME = 'sonicyt-v6';
-const CACHE_ANTERIOR = 'sonicyt-v5';
+const CACHE_NAME = 'sonicyt-v7-modular';
+const CACHE_ANTERIOR = 'sonicyt-v6';
 
 const STATIC_ASSETS = [
   './',
   './index.html',
   './css/style.css',
+  './extensions/itunes-bridge.js',
+  './extensions/youtube-bridge.js',
   './manifest.json',
   './sw.js'
 ];
@@ -41,6 +43,7 @@ self.addEventListener('fetch', (event) => {
   const { request } = event;
   const url = new URL(request.url);
 
+  // Cascarón y extensiones (mismo origen): cache-first
   if (url.origin === location.origin) {
     event.respondWith(
       caches.match(request).then((cached) => {
@@ -55,6 +58,7 @@ self.addEventListener('fetch', (event) => {
       })
     );
   } else {
+    // APIs externas (iTunes, Invidious, audio): siempre red, sin caché
     event.respondWith(fetch(request));
   }
 });

@@ -7,7 +7,7 @@
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="apple-mobile-web-app-title" content="Sonicyt">
-  <meta name="description" content="Reproductor de música PWA estilo Apple Music">
+  <meta name="description" content="Reproductor de música PWA modular estilo Apple Music">
   <title>Sonicyt</title>
   <link rel="manifest" href="manifest.json">
   <link rel="icon" type="image/png" sizes="192x192" href="icon-192.png">
@@ -25,6 +25,7 @@
 
       <!-- ===== VISTA INICIO ===== -->
       <section class="view" id="view-inicio">
+        <p class="ext-status" id="extStatus"></p>
         <h2 class="section-title">Escuchar ahora</h2>
         <div class="carousel" id="carouselNow"></div>
         <h2 class="section-title">Álbumes y sencillos</h2>
@@ -128,19 +129,35 @@
 
   <script>
 /* ============================================================
-   Sonicyt — Hybrid Engine v6
-   Motor VISUAL: iTunes Search API (portadas reales 600px)
-   Audio COMPLETO: fusión invisible en segundo plano vía
-   Invidious (sin cookies) con ventana de 3 segundos.
-   Si la fusión no responde, suena el preview de 30 s de
-   iTunes automáticamente: nunca se corta ni muestra errores.
+   Sonicyt — Núcleo modular (cascarón)
+   Este archivo NO conoce proveedores. Solo:
+     1. Inyecta dinámicamente los conectores de extensions/.
+     2. Pinta los resultados con la interfaz de vidrio.
+     3. Reproduce y hace el swap al audio completo si un
+        conector con capacidad "resolve" responde a tiempo.
+
+   Contrato de extensión (estilo .sflx):
+     window.SonicytExtensions['id'] = {
+       id, nombre, version, orden,
+       capacidades: ['search' | 'resolve'],
+       search(consulta, { limit, quality }) -> Promise<pista[]>,
+       resolve(pista, { timeoutMs }) -> Promise<url>,
+       generos, catalogos   // opcionales, para la interfaz
+     }
    ============================================================ */
 
-const ITUNES_API = 'https://itunes.apple.com/search?media=music&entity=song&limit=20&term=';
-const INVIDIOUS_INSTANCES = ['https://tux.digital', 'https://projectsegfau.lt', 'https://yewtu.be'];
+const RUTA_EXTENSIONES = [
+  'extensions/itunes-bridge.js',
+  'extensions/youtube-bridge.js'
+];
+
 const TIEMPO_FUSION_MS = 3000;
-const CATALOGO_INICIO = ['Pop', 'Electronic', 'Lofi'];
-const GENEROS = ['Pop', 'Rock', 'Electronic', 'Lofi', 'Jazz', 'Hip-Hop', 'Reggaetón', 'Salsa', 'Metal', 'K-Pop', 'Clásica', 'Bossanova'];
+const GENEROS_RESPALDO = ['Pop', 'Rock', 'Electronic', 'Lofi', 'Jazz', 'Hip-Hop', 'Salsa', 'Metal', 'Clásica'];
+const HIST_KEY = 'sonicyt-historial-v7';
+const HIST_KEY_LEGACY = 'sonicyt-historial-v6';
+
+// Registro global compartido con los conectores
+window.SonicytExtensions = window.SonicytExtensions || {};
 
 // ---------- Modelo DOM ----------
 let searchInput, searchBtn, resultsEl;
@@ -149,16 +166,16 @@ let nowPlaying, npBackdrop, npArt, npTitle, npArtist, npBadge, npProgress, npTim
 let btnNpPrev, btnNpPlay, btnNpNext, btnNpDownload, btnNpDownloadText, npDownloadStatus, npVol, btnNpClose;
 let btnConfig, configPanel, btnCloseConfig, q128Btn, q256Btn;
 let tabBar, carouselNow, gridAlbums, chipsEl, exploreGrid, exploreMsg, biblioGrid, biblioMsg, btnClearHistory;
+let extStatus;
 
 let currentSong = null;
 let quality = localStorage.getItem('sonicyt-quality') || '256';
 let inicioCargado = false;
 let generoActivo = null;
-let fusionController = null;
+let promesaExtensiones = null;
 
 const SVG_PLAY = '<svg viewBox="0 0 24 24" fill="currentColor" width="26" height="26"><path d="M8 5v14l11-7z"/></svg>';
 const SVG_PAUSE = '<svg viewBox="0 0 24 24" fill="currentColor" width="26" height="26"><path d="M6 5h4v14H6zM14 5h4v14h-4z"/></svg>';
-const SVG_DL_FULL = '<svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M5 20h14v-2H5v2zM12 3l-6 7h4v6h4v-6h4l-6-7z"/></svg>';
 
 function $id(id) { return document.getElementById(id); }
 
@@ -209,6 +226,7 @@ function obtenerElementos() {
   biblioGrid = $id('biblioGrid');
   biblioMsg = $id('biblioMsg');
   btnClearHistory = $id('btnClearHistory');
+  extStatus = $id('extStatus');
 }
 
 // ---------- Utilidades ----------
@@ -239,6 +257,7 @@ function setEstado(el, mensaje, esError) {
 }
 
 function iconName(btn, name) {
+  if (!btn) return;
   btn.innerHTML = (name === 'pause') ? SVG_PAUSE : SVG_PLAY;
 }
 
@@ -246,10 +265,255 @@ function sanearNombre(texto) {
   return (texto || 'Audio').replace(/[\\/:*?"<>|]/g, '').slice(0, 100);
 }
 
-function artworkSize() {
-  return quality === '256' ? '600x600' : '300x300';
+function placeholderArt() {
+  return 'data:image/svg+xml;utf8,' + encodeURIComponent(
+    '<svg xmlns="http://www.w3.org/2000/svg" width="300" height="300"><rect width="300" height="300" fill="#161622"/><text x="150" y="178" font-size="72" text-anchor="middle" fill="#1DB954" font-family="sans-serif">&#9834;</text></svg>'
+  );
 }
 
+// ============================================================
+// 1. CARGA DINÁMICA DE EXTENSIONES
+// ============================================================
+function inyectarScript(ruta) {
+  return new Promise(function (resolve, reject) {
+    const tag = document.createElement('script');
+    tag.src = ruta;
+    tag.async = false;
+    tag.onload = function () { resolve(ruta); };
+    tag.onerror = function () { reject(new Error('No se pudo cargar ' + ruta)); };
+    document.head.appendChild(tag);
+  });
+}
+
+async function cargarExtensiones() {
+  const cargadas = [];
+  const fallos = [];
+
+  for (let i = 0; i < RUTA_EXTENSIONES.length; i++) {
+    const ruta = RUTA_EXTENSIONES[i];
+    try {
+      await inyectarScript(ruta);
+      cargadas.push(ruta);
+    } catch (err) {
+      fallos.push({ ruta: ruta, error: err.message });
+      console.warn('[Sonicyt]', err.message);
+    }
+  }
+
+  actualizarEstadoExtensiones(cargadas, fallos);
+  return { cargadas: cargadas, fallos: fallos };
+}
+
+function actualizarEstadoExtensiones(cargadas, fallos) {
+  if (!extStatus) return;
+  const extensiones = listarExtensiones();
+  const nombres = extensiones.map(function (e) { return e.nombre; });
+
+  if (extensiones.length === 0) {
+    extStatus.className = 'ext-status error';
+    extStatus.textContent = 'Sin extensiones activas. Revisa extensions/ o la conexión.';
+    return;
+  }
+
+  if (fallos.length > 0) {
+    extStatus.className = 'ext-status aviso';
+    extStatus.textContent = 'Extensiones activas: ' + nombres.join(' · ') +
+      ' — falló: ' + fallos.map(function (f) { return f.ruta; }).join(', ');
+    return;
+  }
+
+  extStatus.className = 'ext-status';
+  extStatus.textContent = '✓ ' + extensiones.length + ' extensiones cargadas: ' + nombres.join(' · ');
+}
+
+function listarExtensiones() {
+  const contenedor = window.SonicytExtensions || {};
+  const ids = Object.keys(contenedor);
+  const lista = [];
+
+  for (let i = 0; i < ids.length; i++) {
+    const ext = contenedor[ids[i]];
+    if (ext && ext.id && ext.capacidades && ext.capacidades.length) {
+      lista.push(ext);
+    }
+  }
+
+  lista.sort(function (a, b) { return (a.orden || 100) - (b.orden || 100); });
+  return lista;
+}
+
+function extensionesCon(capacidad) {
+  const todas = listarExtensiones();
+  const filtradas = [];
+  for (let i = 0; i < todas.length; i++) {
+    if (todas[i].capacidades.indexOf(capacidad) !== -1) filtradas.push(todas[i]);
+  }
+  return filtradas;
+}
+
+function primeroCon(capacidad) {
+  const lista = extensionesCon(capacidad);
+  return lista.length ? lista[0] : null;
+}
+
+async function asegurarExtensiones() {
+  if (promesaExtensiones) await promesaExtensiones;
+}
+
+// Envuelve una promesa para no romper Promise.all si un conector falla
+function aResultado(promesa) {
+  return Promise.resolve(promesa).then(
+    function (valor) { return { ok: true, valor: valor }; },
+    function (error) { return { ok: false, error: error || new Error('Error desconocido') }; }
+  );
+}
+
+function deduplicar(items) {
+  const vistos = {};
+  const salida = [];
+
+  for (let i = 0; i < items.length; i++) {
+    const it = items[i];
+    if (!it || !it.id || vistos[it.id]) continue;
+    vistos[it.id] = true;
+    salida.push(it);
+  }
+
+  salida.sort(function (a, b) { return (b.prioridad || 0) - (a.prioridad || 0); });
+  return salida;
+}
+
+// ============================================================
+// 2. CONSULTA A LAS EXTENSIONES
+// ============================================================
+async function buscarEnExtensiones(consulta, limite) {
+  const buscadores = extensionesCon('search');
+  if (buscadores.length === 0) {
+    throw new Error('No hay extensiones de búsqueda cargadas');
+  }
+
+  const opciones = { limit: limite || 20, quality: quality };
+  const promesas = buscadores.map(function (ext) {
+    return aResultado(ext.search(consulta, opciones)).then(function (resultado) {
+      return { ext: ext, resultado: resultado };
+    });
+  });
+
+  const settled = await Promise.all(promesas);
+  let items = [];
+  const fuentes = [];
+
+  for (let i = 0; i < settled.length; i++) {
+    const ext = settled[i].ext;
+    const r = settled[i].resultado;
+
+    if (r.ok && r.valor && r.valor.length) {
+      items = items.concat(r.valor);
+      fuentes.push(ext.nombre);
+    } else if (!r.ok) {
+      console.warn('[Sonicyt] ' + ext.nombre + ':', r.error.message);
+    }
+  }
+
+  return { items: deduplicar(items), fuentes: fuentes };
+}
+
+function cancelarFusion() {
+  const puente = primeroCon('resolve');
+  if (puente && typeof puente.cancelar === 'function') {
+    puente.cancelar();
+  }
+}
+
+// Fusión invisible: pide audio completo al conector "resolve" con ventana propia
+function intentarFusion(item) {
+  const puente = primeroCon('resolve');
+  if (!puente || typeof puente.resolve !== 'function') return Promise.resolve(null);
+
+  const pista = {
+    artist: item.artist_name || item.artist || item.author || '',
+    title: item.name || item.title || '',
+    videoId: item.videoId || null
+  };
+
+  return aResultado(puente.resolve(pista, { timeoutMs: TIEMPO_FUSION_MS })).then(function (r) {
+    return (r.ok && r.valor) ? r.valor : null;
+  });
+}
+
+// ============================================================
+// 3. HISTORIAL (Biblioteca) — guarda SIEMPRE la imagen completa
+// ============================================================
+function normalizarEntradaHistorial(it) {
+  const imagen = it.image || it.thumb || '';
+  return {
+    id: it.id,
+    name: it.name || it.title || 'Sin título',
+    artist_name: it.artist_name || it.artist || 'Artista desconocido',
+    image: imagen,
+    thumb: imagen,
+    url: it.url || it.audio || null,
+    completa: it.completa === true,
+    fuente: it.fuente || 'historial'
+  };
+}
+
+function cargarHistorial() {
+  try {
+    let crudo = localStorage.getItem(HIST_KEY);
+    let migrado = false;
+
+    if (!crudo) {
+      crudo = localStorage.getItem(HIST_KEY_LEGACY);
+      migrado = !!crudo;
+    }
+
+    const lista = JSON.parse(crudo || '[]');
+    if (!Array.isArray(lista)) return [];
+
+    // Normaliza también las entradas antiguas (solo tenían "thumb")
+    const normalizada = lista
+      .map(normalizarEntradaHistorial)
+      .filter(function (it) { return !!it.id; });
+
+    if (migrado) {
+      localStorage.setItem(HIST_KEY, JSON.stringify(normalizada));
+      localStorage.removeItem(HIST_KEY_LEGACY);
+    }
+
+    return normalizada;
+  } catch (e) {
+    return [];
+  }
+}
+
+function agregarAHistorial(song) {
+  const entrada = normalizarEntradaHistorial({
+    id: song.id,
+    name: song.title,
+    artist_name: song.artist,
+    image: song.thumb || song.image,
+    url: song.url,
+    completa: song.completa,
+    fuente: song.fuente
+  });
+
+  if (!entrada.id || !entrada.url) return;
+
+  let hist = cargarHistorial().filter(function (t) { return t.id !== entrada.id; });
+  hist.unshift(entrada);
+  hist = hist.slice(0, 50);
+
+  try {
+    localStorage.setItem(HIST_KEY, JSON.stringify(hist));
+  } catch (e) {
+    console.warn('[Sonicyt] Historial no disponible:', e.message);
+  }
+}
+
+// ============================================================
+// 4. REPRODUCTOR
+// ============================================================
 function actualizacionBadge() {
   if (!currentSong) return;
   if (currentSong.completa) {
@@ -263,137 +527,21 @@ function actualizacionBadge() {
   }
 }
 
-// ---------- Historial (localStorage) ----------
-function cargarHistorial() {
-  try {
-    return JSON.parse(localStorage.getItem('sonicyt-historial-v6') || '[]');
-  } catch (e) {
-    return [];
-  }
-}
-
-function agregarAHistorial(song) {
-  let hist = cargarHistorial().filter(function (t) { return t.id !== song.id; });
-  hist.unshift(song);
-  hist = hist.slice(0, 50);
-  localStorage.setItem('sonicyt-historial-v6', JSON.stringify(hist));
-}
-
-// ---------- Mapeo iTunes → modelo visual ----------
-function mapeariTunes(t) {
-  const img = t.artworkUrl100 ? t.artworkUrl100.replace('100x100bb', artworkSize() + 'bb') : '';
-  return {
-    id: 'it-' + t.trackId,
-    name: t.trackName,
-    artist_name: t.artistName,
-    image: img,
-    audio: t.previewUrl,
-    completa: false
-  };
-}
-
-// ---------- Fetch de catálogos iTunes (visual, instantáneo) ----------
-async function fetchItunes(term, limite) {
-  const limiteEfactivo = limite || 12;
-  const res = await fetch(ITUNES_API + encodeURIComponent(term) + '&limit=' + limiteEfactivo, { mode: 'cors' });
-  if (!res.ok) throw new Error('HTTP ' + res.status + ' en iTunes: ' + term);
-  const data = await res.json();
-  return (data.results || []).map(mapeariTunes);
-}
-
-// ---------- FUSIÓN INVISIBLE: audio completo vía Invidious (sin cookies) ----------
-function cancelarFusion() {
-  if (fusionController) {
-    fusionController.abort();
-    fusionController = null;
-  }
-}
-
-async function fusionCancionCompleta(artistName, songName) {
-  cancelarFusion();
-  const controller = new AbortController();
-  fusionController = controller;
-  const timer = setTimeout(function () { controller.abort(); }, TIEMPO_FUSION_MS);
-
-  try {
-    // Paso 1: buscar el videoId en Invidious usando artista + título
-    let videoId = null;
-    for (let i = 0; i < INVIDIOUS_INSTANCES.length; i++) {
-      const instancia = INVIDIOUS_INSTANCES[i];
-      try {
-        const res = await fetch(instancia + '/api/v1/search?q=' + encodeURIComponent(artistName + ' ' + songName) + '&type=video', {
-          mode: 'cors', signal: controller.signal
-        });
-        if (!res.ok) continue;
-        const data = await res.json();
-        if (data && data.length > 0) { videoId = data[0].videoId; break; }
-      } catch (e) {
-        if (e.name === 'AbortError') throw e;
-        continue;
-      }
-    }
-    if (!videoId) throw new Error('Invidious sin resultados');
-
-    // Paso 2: extraer el stream itag=140 del video
-    for (let i = 0; i < INVIDIOUS_INSTANCES.length; i++) {
-      const instancia = INVIDIOUS_INSTANCES[i];
-      try {
-        const res = await fetch(instancia + '/api/v1/videos/' + videoId, {
-          mode: 'cors', signal: controller.signal
-        });
-        if (!res.ok) continue;
-        const vid = await res.json();
-        const formats = vid.adaptiveFormats || [];
-        const f = formats.find(function (x) {
-          return x.itag === 140 || (x.contentType && x.contentType.startsWith('audio/'));
-        });
-        if (f && f.url) {
-          return f.url;
-        }
-      } catch (e) {
-        if (e.name === 'AbortError') throw e;
-        continue;
-      }
-    }
-    throw new Error('Sin itag=140');
-  } catch (err) {
-    throw err;
-  } finally {
-    clearTimeout(timer);
-    fusionController = null;
-  }
-}
-
-// ---------- Cambio de stream sin cortes (swap continuo) ----------
-function cambiarStreamSinCortes(urlCompleto) {
-  const posicion = audio.currentTime || 0;
-  const estabaSonando = !audio.paused;
-  audio.src = urlCompleto;
-  audio.addEventListener('loadedmetadata', function alFetch() {
-    try { audio.currentTime = posicion; } catch (e) { /* algunos navegadores */ }
-    audio.removeEventListener('loadedmetadata', alFetch);
-  });
-  if (estabaSonando) audio.play().catch(function () {});
-  currentSong.url = urlCompleto;
-  currentSong.completa = true;
-  actualizacionBadge();
-  agregarAHistorial(currentSong);
-  npDownloadStatus.textContent = 'Audio completo cargado sin cortes ✔';
-}
-
-// ---------- Reproductor ----------
 function reproducirPreview(item) {
   currentSong = {
-    id: item.id || 'it-' + Math.floor(Math.random() * 1e10),
+    id: item.id || ('tmp-' + Math.floor(Math.random() * 1e10)),
     title: item.name || item.title || 'Sin título',
-    artist: item.artist_name || item.author || 'Artista desconocido',
-    thumb: item.image || '',
+    artist: item.artist_name || item.artist || item.author || 'Artista desconocido',
+    thumb: item.image || item.thumb || '',
     url: item.audio || item.url || null,
-    // Historial sin campo audio: la URL guardada ya es la pista resuelta (completa o preview)
-    completa: !item.audio && item.completa === true
+    // Historial sin campo audio: la URL guardada ya es la pista resuelta
+    completa: !item.audio && item.completa === true,
+    fuente: item.fuente || 'historial'
   };
+
   audio.src = currentSong.url;
   audio.play().catch(function () { /* autoplay bloqueado */ });
+
   actualizarReproductorMini();
   abrirNowPlaying();
   agregarAHistorial(currentSong);
@@ -407,24 +555,43 @@ async function cargarCancion(item) {
 
   cancelarFusion();
 
-  // 1) SONAR AL INSTANTE con el preview de iTunes (nunca bloquear el usuario)
+  // 1) Suena al instante el preview de iTunes (nunca bloquea al usuario)
   reproducirPreview(item);
+  const idEnReproduccion = currentSong.id;
 
-  // 2) FUSIÓN INVISIBLE: intentar el MP3 completo en segundo plano (ventana de 3 s)
-  const artist = item.artist_name || item.author || '';
-  const song = item.name || item.title || '';
-  fusionCancionCompleta(artist, song).then(function (urlCompleto) {
-    // Llegó antes de los 3 s → swap continuo a la pista completa
-    if (currentSong) cambiarStreamSinCortes(urlCompleto);
+  // 2) Fusión invisible: si el conector responde en su ventana, swap continuo
+  intentarFusion(item).then(function (urlCompleto) {
+    if (!urlCompleto) return;
+    // Evita secuestrar la pista si el usuario ya cambió de canción
+    if (!currentSong || currentSong.id !== idEnReproduccion) return;
+    cambiarStreamSinCortes(urlCompleto);
   }).catch(function () {
-    // No respondió a tiempo o Invidious caído: el preview sigue sonando, sin errores
+    // Sin audio completo a tiempo: el preview sigue sonando, sin errores
   });
+}
+
+function cambiarStreamSinCortes(urlCompleto) {
+  const posicion = audio.currentTime || 0;
+  const estabaSonando = !audio.paused;
+
+  audio.src = urlCompleto;
+  audio.addEventListener('loadedmetadata', function alCargar() {
+    try { audio.currentTime = posicion; } catch (e) { /* algunos navegadores */ }
+    audio.removeEventListener('loadedmetadata', alCargar);
+  });
+  if (estabaSonando) audio.play().catch(function () {});
+
+  currentSong.url = urlCompleto;
+  currentSong.completa = true;
+  actualizacionBadge();
+  agregarAHistorial(currentSong);
+  npDownloadStatus.textContent = 'Audio completo cargado sin cortes ✔';
 }
 
 function actualizarReproductorMini() {
   if (!currentSong) return;
   playerBar.style.display = 'flex';
-  playerThumb.src = currentSong.thumb;
+  playerThumb.src = currentSong.thumb || placeholderArt();
   playerTitle.textContent = currentSong.title;
   playerArtist.textContent = currentSong.artist;
   refreshPlayIcons();
@@ -438,8 +605,8 @@ function refreshPlayIcons() {
 
 function abrirNowPlaying() {
   if (!currentSong) return;
-  npBackdrop.src = currentSong.thumb;
-  npArt.src = currentSong.thumb;
+  npBackdrop.src = currentSong.thumb || placeholderArt();
+  npArt.src = currentSong.thumb || placeholderArt();
   npTitle.textContent = currentSong.title;
   npArtist.textContent = currentSong.artist;
   nowPlaying.style.display = 'flex';
@@ -456,13 +623,18 @@ function cerrarNowPlaying() {
 async function descargarCancion() {
   if (!currentSong || !currentSong.url) return;
   npDownloadStatus.textContent = 'Descargando…';
+
   try {
     const res = await fetch(currentSong.url);
     if (!res.ok) throw new Error('HTTP ' + res.status);
     const blob = await res.blob();
-    const ext = (currentSong.completa) ? 'mp3' : ((blob.type && blob.type.indexOf('mpeg') !== -1) ? 'mp3' : 'm4a');
+
+    const ext = (currentSong.completa)
+      ? 'mp3'
+      : ((blob.type && blob.type.indexOf('mpeg') !== -1) ? 'mp3' : 'm4a');
     const nombre = sanearNombre(currentSong.artist + ' - ' + currentSong.title) + '.' + ext;
     const urlBlob = URL.createObjectURL(blob);
+
     const a = document.createElement('a');
     a.href = urlBlob;
     a.download = nombre;
@@ -470,6 +642,7 @@ async function descargarCancion() {
     a.click();
     document.body.removeChild(a);
     setTimeout(function () { URL.revokeObjectURL(urlBlob); }, 4000);
+
     npDownloadStatus.textContent = 'Guardado en tu carpeta de Descargas ✔ (' + Math.round(blob.size / 1024) + ' KB)';
   } catch (err) {
     npDownloadStatus.textContent = 'Descarga nativa abierta…';
@@ -483,11 +656,11 @@ async function descargarCancion() {
   }
 }
 
-// ---------- Render visual ----------
+// ============================================================
+// 5. RENDER (vidrio esmerilado)
+// ============================================================
 function crearCard(item, tipo) {
-  const thumbUrl = item.image || ('data:image/svg+xml;utf8,' + encodeURIComponent(
-    '<svg xmlns="http://www.w3.org/2000/svg" width="300" height="300"><rect width="300" height="300" fill="#161622"/><text x="150" y="178" font-size="72" text-anchor="middle" fill="#1DB954" font-family="sans-serif">&#9834;</text></svg>'
-  ));
+  const thumbUrl = item.image || item.thumb || placeholderArt();
   const titulo = item.name || item.title || 'Sin título';
   const artista = item.artist_name || item.author || 'Artista desconocido';
 
@@ -496,6 +669,10 @@ function crearCard(item, tipo) {
   card.innerHTML =
     '<div class="card-art"><img loading="lazy" src="' + escapeHtml(thumbUrl) + '" alt=""></div>' +
     (tipo === 'list' ? '' : '<div class="card-title">' + escapeHtml(titulo) + '</div><div class="card-artist">' + escapeHtml(artista) + '</div>');
+
+  const img = card.querySelector('img');
+  if (img) img.addEventListener('error', function () { img.src = placeholderArt(); });
+
   card.title = titulo + ' · ' + artista;
   card.onclick = function () { cargarCancion(item); };
   return card;
@@ -503,54 +680,123 @@ function crearCard(item, tipo) {
 
 function renderLista(items, contenedor) {
   contenedor.innerHTML = '';
+
   items.forEach(function (it) {
     const row = document.createElement('div');
     row.className = 'row-card';
-    row.innerHTML =
-      '<img class="row-art" loading="lazy" src="' + escapeHtml(it.image || '') + '" alt="">' +
-      '<div class="row-info">' +
-      '<div class="row-title">' + escapeHtml(it.name || it.title || '') + '</div>' +
-      '<div class="row-artist">' + escapeHtml(it.artist_name || it.author || '') + '</div>' +
-      '</div>';
+
+    const img = document.createElement('img');
+    img.className = 'row-art';
+    img.loading = 'lazy';
+    img.alt = '';
+    img.src = it.image || it.thumb || placeholderArt();
+    img.addEventListener('error', function () { img.src = placeholderArt(); });
+
+    const info = document.createElement('div');
+    info.className = 'row-info';
+
+    const tituloEl = document.createElement('div');
+    tituloEl.className = 'row-title';
+    tituloEl.textContent = it.name || it.title || 'Sin título';
+
+    const artistaEl = document.createElement('div');
+    artistaEl.className = 'row-artist';
+    artistaEl.textContent = it.artist_name || it.artist || 'Artista desconocido';
+
+    const tag = document.createElement('span');
+    tag.className = 'row-tag' + (it.completa ? ' full' : '');
+    tag.textContent = it.completa ? 'COMPLETA' : 'PREVIEW 30s';
+
+    info.appendChild(tituloEl);
+    info.appendChild(artistaEl);
+    info.appendChild(tag);
+
+    row.appendChild(img);
+    row.appendChild(info);
     row.onclick = function () { cargarCancion(it); };
     contenedor.appendChild(row);
   });
 }
 
-function renderizar(items) {
+function renderizar(items, fuentes) {
   if (!resultsEl) return;
   resultsEl.innerHTML = '';
+
   const toast = document.createElement('p');
   toast.className = 'fuente-toast';
-  toast.textContent = '♪ Portadas y metadatos por iTunes · audio completo cuando esté disponible';
+  const origen = (fuentes && fuentes.length) ? fuentes.join(' + ') : 'extensiones';
+  toast.textContent = '♪ ' + items.length + ' resultados · ' + origen + ' · toca para fusionar el audio completo';
   resultsEl.appendChild(toast);
+
   items.forEach(function (it) {
     resultsEl.appendChild(crearCard(it, 'list'));
   });
 }
 
-// ---------- Inicio: catálogos iTunes instantáneos ----------
+// ---------- Inicio: catálogos declarados por las extensiones ----------
 async function cargarInicio() {
-  setEstado(carouselNow, 'Cargando portadas…', false);
-  try {
-    const promises = CATALOGO_INICIO.map(function (t) { return fetchItunes(t); });
-    const [pop, electronic, lofi] = await Promise.all(promises);
-    carouselNow.innerHTML = '';
-    pop.forEach(function (it) { carouselNow.appendChild(crearCard(it, 'carousel')); });
-    gridAlbums.innerHTML = '';
-    electronic.forEach(function (it) { gridAlbums.appendChild(crearCard(it, 'grid')); });
-    lofi.forEach(function (it) { gridAlbums.appendChild(crearCard(it, 'grid')); });
-    if (pop.length === 0) setEstado(carouselNow, 'iTunes no respondió con resultados.', false);
-    inicioCargado = true;
-  } catch (err) {
-    setEstado(carouselNow, 'Error cargando catálogos: ' + err.message, true);
+  await asegurarExtensiones();
+
+  setEstado(carouselNow, 'Cargando extensiones y portadas…', false);
+
+  let extCatalogo = null;
+  const buscadores = extensionesCon('search');
+  for (let i = 0; i < buscadores.length; i++) {
+    if (buscadores[i].catalogos && buscadores[i].catalogos.length) {
+      extCatalogo = buscadores[i];
+      break;
+    }
   }
+
+  if (!extCatalogo) {
+    setEstado(carouselNow, 'Ninguna extensión declaró catálogos de inicio.', true);
+    return;
+  }
+
+  const opciones = { limit: 12, quality: quality };
+  const terminos = extCatalogo.catalogos;
+  const resultados = await Promise.all(terminos.map(function (t) {
+    return aResultado(extCatalogo.search(t, opciones));
+  }));
+
+  carouselNow.innerHTML = '';
+  gridAlbums.innerHTML = '';
+
+  let total = 0;
+  resultados.forEach(function (r, idx) {
+    if (!r.ok || !r.valor || !r.valor.length) return;
+    const destino = (idx === 0) ? carouselNow : gridAlbums;
+    const tipo = (idx === 0) ? 'carousel' : 'grid';
+    r.valor.forEach(function (it) {
+      total += 1;
+      destino.appendChild(crearCard(it, tipo));
+    });
+  });
+
+  if (total === 0) {
+    setEstado(carouselNow, 'Catálogos sin resultados (revisa la conexión).', true);
+    return;
+  }
+
+  inicioCargado = true;
 }
 
 // ---------- Explorar ----------
 function pintarChips() {
+  const generos = [];
+  const extensiones = listarExtensiones();
+
+  for (let i = 0; i < extensiones.length; i++) {
+    const listaExt = extensiones[i].generos || [];
+    for (let j = 0; j < listaExt.length; j++) {
+      if (generos.indexOf(listaExt[j]) === -1) generos.push(listaExt[j]);
+    }
+  }
+
+  const lista = generos.length ? generos : GENEROS_RESPALDO;
   chipsEl.innerHTML = '';
-  GENEROS.forEach(function (g) {
+
+  lista.forEach(function (g) {
     const chip = document.createElement('button');
     chip.type = 'button';
     chip.className = 'chip' + (generoActivo === g ? ' chip-active' : '');
@@ -565,16 +811,22 @@ async function explorarGenero(g) {
   pintarChips();
   exploreGrid.innerHTML = '';
   setEstado(exploreMsg, 'Cargando «' + g + '»…', false);
+
   try {
-    const items = await fetchItunes(g);
+    await asegurarExtensiones();
+    const res = await buscarEnExtensiones(g, 24);
+
     exploreMsg.innerHTML = '';
-    if (items.length === 0) {
+    if (res.items.length === 0) {
       setEstado(exploreMsg, 'Sin resultados para «' + g + '».', false);
       return;
     }
-    items.forEach(function (it) { exploreGrid.appendChild(crearCard(it, 'grid')); });
+
+    res.items.forEach(function (it) {
+      exploreGrid.appendChild(crearCard(it, 'grid'));
+    });
   } catch (err) {
-    setEstado(exploreMsg, 'Error: ' + err.message, true);
+    setEstado(exploreMsg, 'Error: ' + ((err && err.message) || String(err)), true);
   }
 }
 
@@ -582,10 +834,12 @@ async function explorarGenero(g) {
 function renderBiblio() {
   const hist = cargarHistorial();
   biblioGrid.innerHTML = '';
+
   if (hist.length === 0) {
     setEstado(biblioMsg, 'Todavía no hay canciones recientes. Reproduce una y aparecerá aquí.', false);
     return;
   }
+
   biblioMsg.innerHTML = '';
   renderLista(hist, biblioGrid);
 }
@@ -596,29 +850,38 @@ function switchTab(tab) {
     const v = $id('view-' + t);
     if (v) v.style.display = (t === tab) ? 'block' : 'none';
   });
+
   tabBar.querySelectorAll('.tab').forEach(function (b) {
     b.classList.toggle('active', b.dataset.tab === tab);
   });
+
   if (tab === 'inicio' && !inicioCargado) cargarInicio();
   if (tab === 'biblio') renderBiblio();
   if (tab === 'buscar') searchInput.focus();
 }
 
-// ---------- Búsqueda (pestaña Buscar) ----------
+// ---------- Búsqueda: consulta despachada a las extensiones ----------
 async function buscar(q) {
   switchTab('buscar');
-  document.getElementById('results').innerHTML = '<p style="color: #1DB954; text-align: center; font-weight: bold;">[LOG] El botón reacciona. Buscando en iTunes…</p>';
+
+  resultsEl.innerHTML = '';
+  const log = document.createElement('p');
+  log.className = 'log-line';
+  log.textContent = '[LOG] El botón reacciona. Consultando ' + extensionesCon('search').length + ' extensión(es)…';
+  resultsEl.appendChild(log);
 
   try {
-    const items = await fetchItunes(q, 20);
-    if (items.length === 0) {
+    await asegurarExtensiones();
+    const res = await buscarEnExtensiones(q, 20);
+
+    if (res.items.length === 0) {
       setEstado(resultsEl, 'No se encontraron canciones para «' + q + '»', false);
       return;
     }
-    renderizar(items);
+
+    renderizar(res.items, res.fuentes);
   } catch (err) {
-    const detalle = (err && err.message) ? err.message : String(err);
-    setEstado(resultsEl, 'Error: ' + detalle, true);
+    setEstado(resultsEl, 'Error: ' + ((err && err.message) || String(err)), true);
   }
 }
 
@@ -639,7 +902,9 @@ function setQuality(q) {
   cerrarConfig();
 }
 
-// ---------- Inicialización ----------
+// ============================================================
+// 6. INICIALIZACIÓN
+// ============================================================
 function initControles() {
   tabBar.addEventListener('click', function (e) {
     const b = e.target.closest('.tab');
@@ -691,7 +956,8 @@ function initControles() {
   q256Btn.onclick = function () { setQuality('256'); };
 
   btnClearHistory.onclick = function () {
-    localStorage.removeItem('sonicyt-historial-v6');
+    localStorage.removeItem(HIST_KEY);
+    localStorage.removeItem(HIST_KEY_LEGACY);
     renderBiblio();
   };
 
@@ -716,14 +982,22 @@ function initSW() {
   }
 }
 
+async function arrancar() {
+  promesaExtensiones = cargarExtensiones();
+  await promesaExtensiones;
+
+  pintarChips();          // los géneros vienen de las extensiones
+  switchTab('inicio');    // dispara cargarInicio() con los catálogos ya cargados
+}
+
 document.addEventListener('DOMContentLoaded', function () {
   obtenerElementos();
-  pintarChips();
   initControles();
   initSW();
   aplicarCalidadUI();
   refreshPlayIcons();
-  switchTab('inicio');
+  pintarChips();          // respaldo inmediato mientras cargan las extensiones
+  arrancar();
 });
   </script>
 </body>

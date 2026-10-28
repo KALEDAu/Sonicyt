@@ -1,9 +1,20 @@
 /* ========================================
-   Mi Música — Lógica PWA (Vanilla JS)
+   Sonicyt — Lógica PWA (Vanilla JS)
    Búsqueda Invidious + extracción audio itag=140
    ======================================== */
 
-const INVIDIOUS = 'https://invidious.nerdvpn.de'; // instancia pública (cámbiala si cae)
+// ---------- Instancias públicas de Invidious (con fallback automático) ----------
+const INVIDIOUS_INSTANCES = [
+  'https://puffyan.us',
+  'https://flokinet.to',
+  'https://invidious.nerdvpn.de',
+  'https://yewtu.be',
+  'https://invidious.jing.rocks',
+  'https://invidious.f5.si'
+];
+
+let INVIDIOUS = INVIDIOUS_INSTANCES[0]; // instancia activa actual
+let INVIDIOUS_INDEX = 0;
 
 // ---------- Elementos DOM ----------
 const searchInput = document.getElementById('searchInput');
@@ -40,23 +51,51 @@ function escapeHtml(text) {
   return d.innerHTML;
 }
 
-// ---------- Búsqueda en Invidious ----------
+// ---------- Probar siguiente instancia de Invidious ----------
+function siguienteInstancia() {
+  INVIDIOUS_INDEX = (INVIDIOUS_INDEX + 1) % INVIDIOUS_INSTANCES.length;
+  INVIDIOUS = INVIDIOUS_INSTANCES[INVIDIOUS_INDEX];
+  console.log('Cambiando a instancia:', INVIDIOUS);
+  return INVIDIOUS;
+}
+
+// ---------- Búsqueda en Invidious con fallback ----------
 async function buscar(q) {
   try {
     emptyEl.textContent = 'Buscando…';
     emptyEl.style.display = 'block';
     resultsEl.innerHTML = '';
 
-    const url = INVIDIOUS + '/api/v1/search?q=' + encodeURIComponent(q) + '&type=video';
-    const res = await fetch(url);
-    if (!res.ok) throw new Error('Respuesta de API: ' + res.status);
+    let ultimoError = null;
 
-    const data = await res.json();
-    renderizar(data || []);
+    // Probar cada instancia hasta que una funcione
+    for (let i = 0; i < INVIDIOUS_INSTANCES.length; i++) {
+      try {
+        const instancia = INVIDIOUS_INSTANCES[i];
+        const url = instancia + '/api/v1/search?q=' + encodeURIComponent(q) + '&type=video';
+        const res = await fetch(url, { signal: AbortSignal.timeout(10000) });
+        if (!res.ok) throw new Error('Respuesta de API: ' + res.status);
+
+        const data = await res.json();
+        // Si llegamos aquí, la instancia funcionó. Guardarla como activa.
+        INVIDIOUS = instancia;
+        INVIDIOUS_INDEX = i;
+        renderizar(data || []);
+        return; // Éxito, salir de la función
+      } catch (err) {
+        ultimoError = err;
+        console.warn('Instancia falló:', INVIDIOUS_INSTANCES[i], err.message);
+        // Continuar con la siguiente instancia
+      }
+    }
+
+    // Si todas fallaron
+    throw ultimoError || new Error('Todas las instancias de Invidious fallaron');
+
   } catch (err) {
     console.error(err);
     resultsEl.innerHTML = '';
-    emptyEl.textContent = 'No se pudo conectar con Invidious. Revisa tu conexión o prueba otra instancia.';
+    emptyEl.textContent = 'No se pudo conectar con Invidious. Todas las instancias están caídas. Intenta más tarde.';
     emptyEl.style.display = 'block';
   }
 }
@@ -95,46 +134,65 @@ function renderizar(items) {
 // ---------- Cargar canción y extraer audio directo ----------
 async function cargarCancion(item) {
   try {
-    const res = await fetch(INVIDIOUS + '/api/v1/videos/' + item.videoId);
-    if (!res.ok) throw new Error('No se pudo obtener la información del video');
-    const vid = await res.json();
+    let ultimoError = null;
 
-    let audioUrl = null;
-    const formats = vid.adaptiveFormats || [];
+    // Probar cada instancia para obtener info del video y extraer audio
+    for (let i = 0; i < INVIDIOUS_INSTANCES.length; i++) {
+      try {
+        const instancia = INVIDIOUS_INSTANCES[i];
+        const res = await fetch(instancia + '/api/v1/videos/' + item.videoId, { signal: AbortSignal.timeout(10000) });
+        if (!res.ok) throw new Error('No se pudo obtener la información del video');
+        const vid = await res.json();
 
-    // Priorizar itag 140 (audio mp4) o cualquier stream solo de audio
-    const f = formats.find(function (x) {
-      return x.itag === 140 || (x.contentType && x.contentType.startsWith('audio/'));
-    });
+        let audioUrl = null;
+        const formats = vid.adaptiveFormats || [];
 
-    if (f && f.url) {
-      audioUrl = f.url;
-    } else {
-      const fs = vid.formatStreams || [];
-      const f2 = fs.find(function (x) {
-        return x.itag === 140 || (x.type && x.type.includes('audio'));
-      });
-      if (f2 && f2.url) audioUrl = f2.url;
+        // Priorizar itag 140 (audio mp4) o cualquier stream solo de audio
+        const f = formats.find(function (x) {
+          return x.itag === 140 || (x.contentType && x.contentType.startsWith('audio/'));
+        });
+
+        if (f && f.url) {
+          audioUrl = f.url;
+        } else {
+          const fs = vid.formatStreams || [];
+          const f2 = fs.find(function (x) {
+            return x.itag === 140 || (x.type && x.type.includes('audio'));
+          });
+          if (f2 && f2.url) audioUrl = f2.url;
+        }
+
+        if (!audioUrl) throw new Error('No se encontró stream de audio directo (itag=140)');
+
+        // Éxito: guardar instancia activa y datos de la canción
+        INVIDIOUS = instancia;
+        INVIDIOUS_INDEX = i;
+
+        currentSong = {
+          id: vid.videoId || item.videoId,
+          title: vid.title || item.title,
+          artist: vid.author || item.author,
+          thumb: (vid.thumbnails && vid.thumbnails[0] && vid.thumbnails[0].url)
+            ? vid.thumbnails[0].url
+            : (item.thumbnails && item.thumbnails[0] ? item.thumbnails[0].url : ''),
+          url: audioUrl
+        };
+
+        audio.src = currentSong.url;
+        await audio.play().catch(function () {
+          // Autoplay bloqueado; el usuario pulsará play
+        });
+
+        actualizarInterfazReproductor();
+        return; // Éxito, salir de la función
+      } catch (err) {
+        ultimoError = err;
+        console.warn('Instancia falló para cargar canción:', INVIDIOUS_INSTANCES[i], err.message);
+      }
     }
 
-    if (!audioUrl) throw new Error('No se encontró stream de audio directo (itag=140)');
+    throw ultimoError || new Error('No se pudo reproducir la canción en ninguna instancia');
 
-    currentSong = {
-      id: vid.videoId || item.videoId,
-      title: vid.title || item.title,
-      artist: vid.author || item.author,
-      thumb: (vid.thumbnails && vid.thumbnails[0] && vid.thumbnails[0].url)
-        ? vid.thumbnails[0].url
-        : (item.thumbnails && item.thumbnails[0] ? item.thumbnails[0].url : ''),
-      url: audioUrl
-    };
-
-    audio.src = currentSong.url;
-    await audio.play().catch(function () {
-      // Autoplay bloqueado; el usuario pulsará play
-    });
-
-    actualizarInterfazReproductor();
   } catch (err) {
     console.error(err);
     alert('No se pudo reproducir la canción:\n' + err.message);

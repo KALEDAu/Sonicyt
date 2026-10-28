@@ -425,8 +425,9 @@ function cancelarFusion() {
   }
 }
 
-// Fusión invisible: pide audio completo al conector "resolve" con ventana propia
-function intentarFusion(item) {
+// Fusión AUTOMÁTICA: pide audio completo al conector "resolve" con ventana propia.
+// Se dispara al tocar la pista; el usuario no tiene que activar nada.
+function fusionCancionCompleta(item) {
   const puente = primeroCon('resolve');
   if (!puente || typeof puente.resolve !== 'function') return Promise.resolve(null);
 
@@ -555,18 +556,28 @@ async function cargarCancion(item) {
 
   cancelarFusion();
 
+  // El toque dispara la fusión de inmediato, automática y en segundo plano
+  const fusion = fusionCancionCompleta(item);
+
   // 1) Suena al instante el preview de iTunes (nunca bloquea al usuario)
   reproducirPreview(item);
   const idEnReproduccion = currentSong.id;
+  npDownloadStatus.textContent = 'Fusionando audio completo en segundo plano…';
 
-  // 2) Fusión invisible: si el conector responde en su ventana, swap continuo
-  intentarFusion(item).then(function (urlCompleto) {
-    if (!urlCompleto) return;
-    // Evita secuestrar la pista si el usuario ya cambió de canción
+  // 2) Si el conector responde en su ventana, swap continuo sin cortes
+  fusion.then(function (urlCompleto) {
     if (!currentSong || currentSong.id !== idEnReproduccion) return;
+
+    if (!urlCompleto) {
+      npDownloadStatus.textContent = 'Audio completo no disponible · sigue el preview';
+      return;
+    }
+
     cambiarStreamSinCortes(urlCompleto);
   }).catch(function () {
-    // Sin audio completo a tiempo: el preview sigue sonando, sin errores
+    if (currentSong && currentSong.id === idEnReproduccion) {
+      npDownloadStatus.textContent = 'Audio completo no disponible · sigue el preview';
+    }
   });
 }
 
@@ -725,7 +736,7 @@ function renderizar(items, fuentes) {
   const toast = document.createElement('p');
   toast.className = 'fuente-toast';
   const origen = (fuentes && fuentes.length) ? fuentes.join(' + ') : 'extensiones';
-  toast.textContent = '♪ ' + items.length + ' resultados · ' + origen + ' · toca para fusionar el audio completo';
+  toast.textContent = '♪ ' + items.length + ' resultados · ' + origen + ' · audio completo automático';
   resultsEl.appendChild(toast);
 
   items.forEach(function (it) {

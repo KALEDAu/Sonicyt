@@ -1,13 +1,14 @@
 /* ==========================================================================
    Sonicyt Extension · youtube-bridge.js
-   Conector de AUDIO COMPLETO: resuelve la pista íntegra (itag=140) vía
-   Invidious, sin cookies ni claves. Registro: window.SonicytExtensions['youtube']
+   Conector de AUDIO COMPLETO (itag 141/140 m4a) vía Invidious.
+   Estrategia AGRESIVA: no espera turnos. Dispara en paralelo todas las
+   instancias + sus variantes proxificadas (allorigins / codetabs) y se
+   queda con la primera respuesta JSON válida. Sin cookies: credentials omit.
 
-   Contrato del conector (estilo .sflx):
+   Registro: window.SonicytExtensions['youtube']
      - capacidades: ['resolve']
      - resolve({ artist, title }, { timeoutMs }) -> Promise<urlMp3Completo>
      - cancelar() aborta la resolución en curso
-   No toca la interfaz: el cascarón decide cuándo hacer el swap del stream.
    ========================================================================== */
 (function () {
   'use strict';
@@ -18,6 +19,13 @@
     'https://tux.digital',
     'https://projectsegfau.lt',
     'https://yewtu.be'
+  ];
+
+  // Proxies CORS acoplados DENTRO de la extensión (el cascarón no los conoce).
+  // "raw" devuelve el cuerpo tal cual; se codifica la URL destino completa.
+  var PROXIES_CORS = [
+    'https://api.allorigins.win/raw?url=',
+    'https://api.codetabs.com/v1/proxy?quest='
   ];
 
   var TIMEOUT_POR_DEFECTO = 3000;
@@ -34,92 +42,144 @@
     }
   }
 
-  // Paso 1: artista + título → videoId, recorriendo servidores en orden
-  function buscarVideoId(consulta, signal) {
-    var i = 0;
-
-    function intentar() {
-      if (i >= SERVIDORES_INVIDIOUS.length) {
-        return Promise.reject(new Error('Invidious: ningún servidor respondió'));
-      }
-      var base = SERVIDORES_INVIDIOUS[i];
-      i += 1;
-      var url = base + '/api/v1/search?q=' + encodeURIComponent(consulta) + '&type=video&sort_by=relevance';
-
-      return fetch(url, { mode: 'cors', signal: signal })
-        .then(function (res) {
-          if (!res.ok) throw new Error('HTTP ' + res.status + ' en ' + base);
-          return res.json();
-        })
-        .then(function (data) {
-          if (Array.isArray(data) && data.length > 0 && data[0].videoId) {
-            return data[0].videoId;
-          }
-          throw new Error('Sin coincidencias en ' + base);
-        })
-        .catch(function (err) {
-          if (esAborto(err)) throw err;
-          return intentar();
-        });
+  // Cada URL directa se multiplica por los proxies disponibles
+  function candidatosPara(urlDirecta) {
+    var lista = [urlDirecta];
+    for (var p = 0; p < PROXIES_CORS.length; p++) {
+      lista.push(PROXIES_CORS[p] + encodeURIComponent(urlDirecta));
     }
-
-    return intentar();
+    return lista;
   }
 
-  // Paso 2: videoId → stream de audio itag=140 (m4a, compatible con iPhone)
-  function extraerAudio(videoId, signal) {
-    var i = 0;
-
-    function intentar() {
-      if (i >= SERVIDORES_INVIDIOUS.length) {
-        return Promise.reject(new Error('Invidious: sin audio itag=140 disponible'));
+  // Fetch sin cookies ni caché; tolera content-type mentiroso del proxy
+  function pedirJson(url, signal) {
+    return fetch(url, {
+      method: 'GET',
+      mode: 'cors',
+      credentials: 'omit',
+      cache: 'no-store',
+      referrerPolicy: 'no-referrer',
+      headers: { 'Accept': 'application/json' },
+      signal: signal
+    }).then(function (res) {
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      return res.text();
+    }).then(function (texto) {
+      try {
+        return JSON.parse(texto);
+      } catch (e) {
+        throw new Error('Respuesta no JSON');
       }
-      var base = SERVIDORES_INVIDIOUS[i];
-      i += 1;
+    });
+  }
 
-      return fetch(base + '/api/v1/videos/' + encodeURIComponent(videoId), { mode: 'cors', signal: signal })
-        .then(function (res) {
-          if (!res.ok) throw new Error('HTTP ' + res.status + ' en ' + base);
-          return res.json();
-        })
-        .then(function (video) {
-          var formatos = (video && video.adaptiveFormats) || [];
-          var itag140 = null;
-          var mp4 = null;
-          var otroAudio = null;
+  // Carrera real: primera respuesta válida gana; el resto se ignora
+  function carreraCandidatos(urls, validar, signal) {
+    return new Promise(function (resolve, reject) {
+      var pendientes = urls.length;
+      var errores = [];
+      var terminado = false;
 
-          for (var f = 0; f < formatos.length; f++) {
-            var item = formatos[f];
-            if (!item || !item.url) continue;
-            var tipo = item.contentType || '';
-            if (item.itag === 140) { itag140 = item; break; }
-            if (!mp4 && tipo.indexOf('audio/mp4') === 0) mp4 = item;
-            if (!otroAudio && tipo.indexOf('audio/') === 0) otroAudio = item;
+      if (pendientes === 0) {
+        reject(new Error('Sin candidatos disponibles'));
+        return;
+      }
+
+      urls.forEach(function (url) {
+        pedirJson(url, signal).then(function (data) {
+          var valido = validar(data);
+          if (!valido) throw new Error('Respuesta sin datos útiles');
+          if (!terminado) {
+            terminado = true;
+            resolve(valido);
           }
-
-          var elegido = itag140 || mp4 || otroAudio;
-          if (!elegido) throw new Error('Formato de audio no disponible en ' + base);
-
-          var miniatura = '';
-          if (video && video.videoThumbnails && video.videoThumbnails.length) {
-            miniatura = video.videoThumbnails[0].url || '';
+        }).catch(function (err) {
+          if (esAborto(err)) {
+            if (!terminado) {
+              terminado = true;
+              reject(err);
+            }
+            return;
           }
-
-          return {
-            url: elegido.url,
-            itag: elegido.itag,
-            titulo: (video && video.title) || '',
-            autor: (video && video.author) || '',
-            miniatura: miniatura
-          };
-        })
-        .catch(function (err) {
-          if (esAborto(err)) throw err;
-          return intentar();
+          errores.push(err.message);
+          pendientes -= 1;
+          if (pendientes === 0 && !terminado) {
+            terminado = true;
+            reject(new Error('Todos los candidatos fallaron (' + errores.length + ' intentos)'));
+          }
         });
+      });
+    });
+  }
+
+  // Paso 1: artista + título → videoId (carrera de instancias y proxies)
+  function buscarVideoId(consulta, signal) {
+    var candidatos = [];
+    for (var i = 0; i < SERVIDORES_INVIDIOUS.length; i++) {
+      var url = SERVIDORES_INVIDIOUS[i] + '/api/v1/search?q=' +
+        encodeURIComponent(consulta) + '&type=video&sort_by=relevance';
+      candidatos = candidatos.concat(candidatosPara(url));
     }
 
-    return intentar();
+    return carreraCandidatos(candidatos, function (data) {
+      if (Array.isArray(data) && data.length > 0 && data[0].videoId) {
+        return data[0].videoId;
+      }
+      return null;
+    }, signal);
+  }
+
+  // Paso 2: videoId → stream de audio (prioriza m4a de mayor calidad)
+  function extraerAudio(videoId, signal) {
+    var candidatos = [];
+    for (var i = 0; i < SERVIDORES_INVIDIOUS.length; i++) {
+      var url = SERVIDORES_INVIDIOUS[i] + '/api/v1/videos/' + encodeURIComponent(videoId);
+      candidatos = candidatos.concat(candidatosPara(url));
+    }
+
+    return carreraCandidatos(candidatos, function (video) {
+      if (!video || !Array.isArray(video.adaptiveFormats)) return null;
+
+      var formatos = video.adaptiveFormats;
+      var itag141 = null;
+      var itag140 = null;
+      var mp4 = null;
+      var generico = null;
+
+      for (var f = 0; f < formatos.length; f++) {
+        var item = formatos[f];
+        if (!item || !item.url) continue;
+        var tipo = item.contentType || '';
+
+        if (item.itag === 141) { if (!itag141) itag141 = item; continue; }
+        if (item.itag === 140) { if (!itag140) itag140 = item; continue; }
+        if (tipo.indexOf('audio/mp4') === 0) {
+          if (!mp4 || (item.bitrate || 0) > (mp4.bitrate || 0)) mp4 = item;
+          continue;
+        }
+        if (tipo.indexOf('audio/') === 0) {
+          if (!generico || (item.bitrate || 0) > (generico.bitrate || 0)) generico = item;
+        }
+      }
+
+      var elegido = itag141 || itag140 || mp4 || generico;
+      if (!elegido) return null;
+
+      var miniatura = '';
+      if (video.videoThumbnails && video.videoThumbnails.length) {
+        miniatura = video.videoThumbnails[0].url || '';
+      }
+
+      return {
+        url: elegido.url,
+        itag: elegido.itag,
+        tipo: elegido.contentType || '',
+        bitrate: elegido.bitrate || 0,
+        titulo: video.title || '',
+        autor: video.author || '',
+        miniatura: miniatura
+      };
+    }, signal);
   }
 
   function resolver(pista, opciones) {
@@ -172,12 +232,15 @@
   window.SonicytExtensions['youtube'] = {
     id: 'youtube',
     nombre: 'YouTube Bridge',
-    version: '1.0.0',
+    version: '1.1.0',
     tipo: 'audio-completo',
     orden: 20,
     capacidades: ['resolve'],
     servidores: SERVIDORES_INVIDIOUS,
+    proxies: PROXIES_CORS,
     timeoutPorDefecto: TIMEOUT_POR_DEFECTO,
+    candidatosPara: candidatosPara,
+    pedirJson: pedirJson,
     buscarVideoId: buscarVideoId,
     extraerAudio: extraerAudio,
     cancelar: cancelar,

@@ -1,10 +1,10 @@
 /* ========================================
    Sonicyt — Service Worker (PWA)
-   Caché v7 modular: cascarón + conectores en extensions/
+   Caché v7-auto: fusión automática + conectores en extensions/
    ======================================== */
 
-const CACHE_NAME = 'sonicyt-v7-modular';
-const CACHE_ANTERIOR = 'sonicyt-v6';
+const CACHE_NAME = 'sonicyt-v7-auto';
+const CACHE_ANTERIOR = 'sonicyt-v7-modular';
 
 const STATIC_ASSETS = [
   './',

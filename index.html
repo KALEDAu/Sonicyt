@@ -139,11 +139,8 @@ async function buscar(q) {
 
       console.log('Probando instancia:', instancia);
 
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 5000);
-
-      const res = await fetch(urlProxy, { signal: controller.signal });
-      clearTimeout(timeoutId);
+      // Fetch sin límite de tiempo artificial — que el servidor tarde lo necesario
+      const res = await fetch(urlProxy);
 
       if (!res.ok) {
         throw new Error('HTTP ' + res.status + ' desde ' + instancia);
@@ -164,9 +161,6 @@ async function buscar(q) {
       renderizar(data || []);
       return;
     } catch (err) {
-      if (err.name === 'AbortError') {
-        document.getElementById('results').innerHTML = '<p style="color: #1DB954; text-align: center; font-weight: bold;">[LOG] Servidor lento, saltando al siguiente...</p>';
-      }
       ultimoError = err;
       console.warn('Instancia falló:', INVIDIOUS_INSTANCES[i], err.message);
     }
